@@ -12,39 +12,25 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # Mesa builds can take a long time
+    timeout-minutes: 360
 
     steps:
-      # ---------------------------------------------------------------
-      # 1. Set up QEMU so we can run the aarch64 Termux container
-      # ---------------------------------------------------------------
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
 
-      # ---------------------------------------------------------------
-      # 2. Checkout the repository (for reference; we build from the
-      #    upstream mesa-panvk-g57 repo inside the container)
-      # ---------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ---------------------------------------------------------------
-      # 3. Build inside the Termux aarch64 container
-      # ---------------------------------------------------------------
       - name: Build PanVK inside Termux container
         run: |
           set -euo pipefail
 
-          # Create an output directory that will be mounted into the container
           mkdir -p "${{ github.workspace }}/termux-out"
 
-          # Run the Termux aarch64 container with QEMU emulation.
-          # --privileged is required for QEMU user-mode emulation to work
-          # reliably inside the container.
           docker run --rm \
             --privileged \
             --platform linux/arm64 \
@@ -53,16 +39,15 @@ jobs:
             bash -c '
               set -euo pipefail
 
-              # -------------------------------------------------------
-              # Update package lists and install build dependencies
-              # -------------------------------------------------------
+              # Update package lists
               pkg update -y
+
+              # Install build tools and libraries
+              # Meson is NOT a Termux package – install it via pip
               pkg install -y \
                 git \
-                meson \
                 ninja \
                 clang \
-                llvm \
                 libandroid-shmem \
                 libdrm \
                 libx11 \
@@ -75,40 +60,29 @@ jobs:
                 zstd \
                 pkg-config \
                 python \
+                python-pip \
                 cmake
 
-              # -------------------------------------------------------
+              # Install Meson and its Python dependencies via pip
+              pip install meson mako pyyaml
+
               # Clone the Mesa PanVK repository
-              # -------------------------------------------------------
               cd /tmp
               git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
               cd mesa-panvk
 
               # -------------------------------------------------------
-              # Configure Mesa with Panfrost Vulkan driver
-              #
-              # Flags taken from BUILDING.md:
-              #   -Dplatforms=x11
-              #   -Dc_link_args="-landroid-shmem"
-              #   -Dcpp_link_args="-landroid-shmem"
-              #
-              # We also enable the Panfrost Vulkan driver and disable
-              # the Gallium (OpenGL) drivers since we only need PanVK.
+              # Configure Mesa exactly as in BUILDING.md
               # -------------------------------------------------------
-              meson setup build \
+              meson configure build-bionic \
                 -Dplatforms=x11 \
-                -Dvulkan-drivers=panfrost \
-                -Dgallium-drivers= \
                 -Dc_link_args="-landroid-shmem" \
-                -Dcpp_link_args="-landroid-shmem" \
-                -Dbuildtype=release \
-                -Dllvm=disabled \
-                -Dprefix="$PREFIX"
+                -Dcpp_link_args="-landroid-shmem"
 
               # -------------------------------------------------------
-              # Build
+              # Build exactly as in BUILDING.md
               # -------------------------------------------------------
-              ninja -C build
+              ninja -C build-bionic -j2
 
               # -------------------------------------------------------
               # Collect the built artefacts
@@ -116,38 +90,29 @@ jobs:
               mkdir -p /termux-out/lib
               mkdir -p /termux-out/share/vulkan/icd.d
 
-              # The Vulkan driver library
-              cp build/src/panfrost/vulkan/libvulkan_panfrost.so /termux-out/lib/
+              # The Vulkan driver library (as specified in BUILDING.md)
+              cp build-bionic/src/panfrost/vulkan/libvulkan_panfrost.so /termux-out/lib/
 
-              # The ICD JSON file (name may vary; find it)
-              find build -name "*panfrost*icd*.json" -exec cp {} /termux-out/share/vulkan/icd.d/ \;
-
-              # Also copy any other relevant JSON files
-              find build -name "*.json" -path "*vulkan*" -exec cp {} /termux-out/share/vulkan/icd.d/ \; || true
+              # The ICD JSON file (named panfrost_icd.aarch64.json in BUILDING.md)
+              cp build-bionic/src/panfrost/vulkan/panfrost_icd.aarch64.json /termux-out/share/vulkan/icd.d/
 
               echo "=== Contents of /termux-out ==="
               find /termux-out -type f
             '
 
-      # ---------------------------------------------------------------
-      # 4. Upload artefacts (optional, for debugging / manual use)
-      # ---------------------------------------------------------------
       - name: Upload PanVK artefacts
         uses: actions/upload-artifact@v4
         with:
           name: panvk-termux-aarch64
           path: termux-out/**
 
-      # ---------------------------------------------------------------
-      # 5. Create a GitHub Release (only when a tag is pushed)
-      # ---------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             termux-out/lib/libvulkan_panfrost.so
-            termux-out/share/vulkan/icd.d/*.json
+            termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json
           generate_release_notes: true
           prerelease: true
           tag_name: ${{ github.ref_name }}
