@@ -75,8 +75,12 @@ jobs:
 
               # -------------------------------------------------------
               # Install Meson and its Python dependencies via pip
+              #
+              # packaging is REQUIRED because Python 3.12+ removed
+              # distutils, and Mesa's Mako version check needs one
+              # of the two.
               # -------------------------------------------------------
-              pip install meson mako pyyaml
+              pip install meson mako pyyaml packaging
 
               # -------------------------------------------------------
               # Clone the Mesa PanVK repository into Termux tmp
