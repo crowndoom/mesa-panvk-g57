@@ -39,15 +39,25 @@ jobs:
             bash -c '
               set -euo pipefail
 
+              # -------------------------------------------------------
+              # Update package lists
+              # -------------------------------------------------------
               pkg update -y
 
+              # -------------------------------------------------------
               # Install build tools and libraries
-              # NOTE: glslang is REQUIRED – it provides glslangValidator
+              #
+              #   glslang  -> provides glslangValidator (Mesa needs it)
+              #   libclc   -> required by the Panfrost/PanVK driver
+              #
+              # NOTE: "meson" is NOT a Termux package – install via pip
+              # -------------------------------------------------------
               pkg install -y \
                 git \
                 ninja \
                 clang \
                 glslang \
+                libclc \
                 libandroid-shmem \
                 libdrm \
                 libx11 \
@@ -63,13 +73,27 @@ jobs:
                 python-pip \
                 cmake
 
+              # -------------------------------------------------------
+              # Install Meson and its Python dependencies via pip
+              # -------------------------------------------------------
               pip install meson mako pyyaml
 
+              # -------------------------------------------------------
+              # Clone the Mesa PanVK repository into Termux tmp
+              # NOTE: Termux has no /tmp – use $TMPDIR instead
+              # -------------------------------------------------------
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
               git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
               cd mesa-panvk
 
+              # -------------------------------------------------------
+              # Configure Mesa
+              #
+              # BUILDING.md uses `meson configure build-bionic`, but
+              # `meson configure` only works on an EXISTING build dir.
+              # If build-bionic is not pre-shipped, set it up first.
+              # -------------------------------------------------------
               if [ -d build-bionic ]; then
                 meson configure build-bionic \
                   -Dplatforms=x11 \
@@ -83,11 +107,18 @@ jobs:
                   -Dbuildtype=release
               fi
 
+              # -------------------------------------------------------
+              # Build (as in BUILDING.md)
+              # -------------------------------------------------------
               ninja -C build-bionic -j2
 
+              # -------------------------------------------------------
+              # Collect the built artefacts
+              # -------------------------------------------------------
               mkdir -p /termux-out/lib
               mkdir -p /termux-out/share/vulkan/icd.d
 
+              # Locate the Vulkan driver library and ICD JSON
               find build-bionic -name "libvulkan_panfrost.so" -exec cp {} /termux-out/lib/ \;
               find build-bionic -name "panfrost_icd*.json" -exec cp {} /termux-out/share/vulkan/icd.d/ \;
 
