@@ -52,7 +52,7 @@ jobs:
                 libandroid-shmem libdrm libelf libexpat \
                 libx11 libxext libxfixes libxrandr \
                 libxshmfence libxxf86vm vulkan-loader \
-                zlib zstd pkg-config python python-pip cmake
+                zlib zstd pkg-config python python-pip cmake spirv-llvm-translator
 
               # Bypass PEP 668 for ephemeral container
               pip install --break-system-packages meson mako pyyaml packaging ply
