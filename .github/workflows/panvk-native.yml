@@ -40,84 +40,44 @@ jobs:
               set -euo pipefail
 
               # Termux does not export TMPDIR in non-interactive shells.
-              # Without this line, `set -u` aborts on the next $TMPDIR use.
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
 
               pkg update -y
 
-              # glslang        -> glslangValidator (Mesa configure)
-              # libclc         -> Panfrost/PanVK dependency
-              # spirv-tools    -> spirv-val / spirv-opt
-              # libllvmspirv   -> LLVMSPIRVLib (if packaged on Termux)
+              # Install dependencies
               pkg install -y \
-                git \
-                ninja \
-                clang \
-                glslang \
-                libclc \
-                spirv-tools \
-                libandroid-shmem \
-                libdrm \
-                libelf \
-                libexpat \
-                libx11 \
-                libxext \
-                libxfixes \
-                libxrandr \
-                libxshmfence \
-                libxxf86vm \
-                vulkan-loader \
-                zlib \
-                zstd \
-                pkg-config \
-                python \
-                python-pip \
-                cmake \
-              || true
+                git ninja clang llvm \
+                bison flex \
+                glslang libclc spirv-tools \
+                libandroid-shmem libdrm libelf libexpat \
+                libx11 libxext libxfixes libxrandr \
+                libxshmfence libxxf86vm vulkan-loader \
+                zlib zstd pkg-config python python-pip cmake
 
-              # "meson" is not a Termux package. "packaging" is required
-              # because Python 3.12+ removed distutils. "ply" is used by
-              # mesa-clc / NIR parser generation.
-              pip install meson mako pyyaml packaging ply
+              # Bypass PEP 668 for ephemeral container
+              pip install --break-system-packages meson mako pyyaml packaging ply
 
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
-              rm -rf mesa-panvk
               git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
               cd mesa-panvk
 
-              # Do NOT apply panvk-mali-g57-workaround.patch — it is already
-              # committed in this fork. Re-applying it would fail.
-
-              if [ -d build-bionic ]; then
-                meson configure build-bionic \
-                  -Dplatforms=x11 \
-                  -Dvulkan-drivers=panfrost \
-                  -Dgallium-drivers= \
-                  -Dpanfrost-kmds=kbase \
-                  -Dpanfrost-rust=false \
-                  -Dllvm=enabled \
-                  -Dc_link_args="-landroid-shmem" \
-                  -Dcpp_link_args="-landroid-shmem"
-              else
-                meson setup build-bionic \
-                  -Dplatforms=x11 \
-                  -Dvulkan-drivers=panfrost \
-                  -Dgallium-drivers= \
-                  -Dpanfrost-kmds=kbase \
-                  -Dpanfrost-rust=false \
-                  -Dllvm=enabled \
-                  -Dc_link_args="-landroid-shmem" \
-                  -Dcpp_link_args="-landroid-shmem" \
-                  -Dbuildtype=release
-              fi
+              meson setup build-bionic \
+                -Dplatforms=x11 \
+                -Dvulkan-drivers=panfrost \
+                -Dgallium-drivers= \
+                -Dpanfrost-kmds=kbase \
+                -Dpanfrost-rust=false \
+                -Dllvm=enabled \
+                -Dc_link_args="-landroid-shmem" \
+                -Dcpp_link_args="-landroid-shmem" \
+                -Dbuildtype=release
 
               ninja -C build-bionic -j2
 
               mkdir -p /termux-out/lib
               mkdir -p /termux-out/share/vulkan/icd.d
 
-              # Accept either the plain or the kbase-suffixed .so
               find build-bionic -name "libvulkan_panfrost*.so" -exec cp {} /termux-out/lib/ \;
               find build-bionic -name "panfrost_icd*.json" -exec cp {} /termux-out/share/vulkan/icd.d/ \;
 
@@ -129,7 +89,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: panvk-termux-aarch64
-          path: termux-out/**
+          path: termux-out/
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
