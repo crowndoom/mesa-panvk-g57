@@ -1,120 +1,70 @@
-name: Build PanVK for Termux (aarch64)
+Generating public/private ed25519 key pair.
+Your identification has been saved in /data/data/com.termux/files/usr/etc/ssh/ssh_host_ed25519_key
+Your public key has been saved in /data/data/com.termux/files/usr/etc/ssh/ssh_host_ed25519_key.pub
+The key fingerprint is:
+SHA256:qp7f+5e1Kxt70bMxAkjfyvrQIUubrYIKCl58OaWR2D4 system@867e1ca2b504
+The key's randomart image is:
++--[ED25519 256]--+
+|                 |
+|         .       |
+|        . o .    |
+|    o .  . o .   |
+|   . + .So..o  . |
+|  . . =.. Bo..o+.|
+|.. o Eo  =.o.o.o=|
+|+ o .+oo .o +oo. |
+|.. o=.. ++ooo+.. |
++----[SHA256]-----+
 
-on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
+If you plan to use the 'ssh-agent'
+it is recommended to run it as a service.
+Run 'pkg i termux-services'
+to install the ('runit') service manager
 
-permissions:
-  contents: write
+You can enable the ssh-agent service
+using 'sv-enable ssh-agent'
+You can also enable sshd to autostart
+using 'sv-enable sshd'
+Setting up lld (21.1.8-3) ...
+Setting up vulkan-icd (0.1-1) ...
+Setting up pkg-config (0.29.2-3) ...
+Setting up llvm (21.1.8-3) ...
+Setting up clang (21.1.8-3) ...
+Collecting meson
+  Downloading meson-1.12.0-py3-none-any.whl.metadata (1.7 kB)
+Collecting mako
+  Downloading mako-1.4.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting pyyaml
+  Downloading pyyaml-6.0.3.tar.gz (130 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting MarkupSafe>=2.0 (from mako)
+  Downloading markupsafe-3.0.3.tar.gz (80 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Downloading meson-1.12.0-py3-none-any.whl (1.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 22.0 MB/s  0:00:00
+Downloading mako-1.4.1-py3-none-any.whl (80 kB)
+Building wheels for collected packages: pyyaml, MarkupSafe
+  Building wheel for pyyaml (pyproject.toml): started
+  Building wheel for pyyaml (pyproject.toml): finished with status 'done'
+  Created wheel for pyyaml: filename=pyyaml-6.0.3-cp314-cp314-android_24_arm64_v8a.whl size=45469 sha256=f87845fcef1d674ca74fad2f86dade143a0b74fa7620275dee508891223c3e48
+  Stored in directory: /data/data/com.termux/files/home/.cache/pip/wheels/5c/15/7e/fe0ae6dcc91614d09e03950315089c18fc7cb20913d1334f2b
+  Building wheel for MarkupSafe (pyproject.toml): started
+  Building wheel for MarkupSafe (pyproject.toml): finished with status 'done'
+  Created wheel for MarkupSafe: filename=markupsafe-3.0.3-cp314-cp314-android_24_arm64_v8a.whl size=18989 sha256=2b785134be6f86270fe47af21f9307b73bd1f3e9453d7472e590aa72d47adf07
+  Stored in directory: /data/data/com.termux/files/home/.cache/pip/wheels/59/98/64/49aa38bd164ca08148b53713f16e0625a783374a14974c4040
+Successfully built pyyaml MarkupSafe
+Installing collected packages: pyyaml, meson, MarkupSafe, mako
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    steps:
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Build PanVK inside Termux container
-        run: |
-          set -euo pipefail
-
-          mkdir -p "${{ github.workspace }}/termux-out"
-
-          docker run --rm \
-            --privileged \
-            --platform linux/arm64 \
-            -v "${{ github.workspace }}/termux-out:/termux-out" \
-            termux/termux-docker:aarch64 \
-            bash -c '
-              set -euo pipefail
-
-              # Update package lists
-              pkg update -y
-
-              # Install build tools and libraries
-              # Meson is NOT a Termux package – install it via pip
-              pkg install -y \
-                git \
-                ninja \
-                clang \
-                libandroid-shmem \
-                libdrm \
-                libx11 \
-                libxext \
-                libxfixes \
-                libxshmfence \
-                libxxf86vm \
-                vulkan-loader \
-                zlib \
-                zstd \
-                pkg-config \
-                python \
-                python-pip \
-                cmake
-
-              # Install Meson and its Python dependencies via pip
-              pip install meson mako pyyaml
-
-              # Clone the Mesa PanVK repository
-              cd /tmp
-              git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
-              cd mesa-panvk
-
-              # -------------------------------------------------------
-              # Configure Mesa exactly as in BUILDING.md
-              # -------------------------------------------------------
-              meson configure build-bionic \
-                -Dplatforms=x11 \
-                -Dc_link_args="-landroid-shmem" \
-                -Dcpp_link_args="-landroid-shmem"
-
-              # -------------------------------------------------------
-              # Build exactly as in BUILDING.md
-              # -------------------------------------------------------
-              ninja -C build-bionic -j2
-
-              # -------------------------------------------------------
-              # Collect the built artefacts
-              # -------------------------------------------------------
-              mkdir -p /termux-out/lib
-              mkdir -p /termux-out/share/vulkan/icd.d
-
-              # The Vulkan driver library (as specified in BUILDING.md)
-              cp build-bionic/src/panfrost/vulkan/libvulkan_panfrost.so /termux-out/lib/
-
-              # The ICD JSON file (named panfrost_icd.aarch64.json in BUILDING.md)
-              cp build-bionic/src/panfrost/vulkan/panfrost_icd.aarch64.json /termux-out/share/vulkan/icd.d/
-
-              echo "=== Contents of /termux-out ==="
-              find /termux-out -type f
-            '
-
-      - name: Upload PanVK artefacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: panvk-termux-aarch64
-          path: termux-out/**
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            termux-out/lib/libvulkan_panfrost.so
-            termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json
-          generate_release_notes: true
-          prerelease: true
-          tag_name: ${{ github.ref_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+Successfully installed MarkupSafe-3.0.3 mako-1.4.1 meson-1.12.0 pyyaml-6.0.3
+bash: line 32: cd: /tmp: No such file or directory
+Error: Process completed with exit code 1.
