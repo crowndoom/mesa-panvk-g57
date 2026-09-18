@@ -24,36 +24,27 @@ jobs:
           set -euo pipefail
           mkdir -p "${{ github.workspace }}/termux-out"
 
+          # Host is real aarch64 -> no --platform / QEMU needed.
+          # --user root is required so the container can write to /termux-out.
           docker run --rm \
             --user root \
             -v "${{ github.workspace }}/termux-out:/termux-out" \
             termux/termux-docker:aarch64 \
             bash -c '
               set -euo pipefail
-
-              # Termux native prefix — hard-set so set -u does not abort
-              export PREFIX="/data/data/com.termux/files/usr"
-              export HOME="/data/data/com.termux/files/home"
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
-              export PATH="$HOME/.local/bin:$PREFIX/bin:$PATH"
 
               pkg update -y
 
-              # Note: meson comes from pip below, not from pkg.
-              # expat is provided by libexpat.
+              # Exact dependency list from the dev'"'"'s working recipe
               pkg install -y \
-                git clang lld ninja \
-                python python-pip pkg-config \
-                bison flex cmake \
-                glslang shaderc vulkan-headers vulkan-loader-generic \
-                libandroid-shmem libdrm libxcb xorgproto \
-                libx11 libxshmfence zlib zstd libexpat \
-                libclc spirv-llvm-translator \
-                libxrandr
+                git clang lld ninja python python-pip pkg-config \
+                bison flex cmake glslang shaderc vulkan-headers \
+                vulkan-loader-generic libandroid-shmem libdrm libxcb \
+                xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
+                libxrandr libxrandr-static
 
               pip install --break-system-packages meson mako pyyaml packaging
-
-              command -v meson || { echo "ERROR: meson not found"; exit 1; }
 
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
@@ -61,12 +52,7 @@ jobs:
               git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
               cd mesa-panvk
 
-              # Patch the core count API mismatch in the fork
-              sed -i "s/unsigned pan_query_core_count(const struct pan_kmod_dev_props \*props);/unsigned pan_query_core_count(const struct pan_kmod_dev_props *props, unsigned *core_id_range);/" \
-                src/panfrost/lib/pan_props.h
-              grep -n "pan_query_core_count" src/panfrost/lib/pan_props.h
-
-              # Configure Mesa for kbase JM on Termux (Vulkan-only build)
+              # Exact dev recipe (BUILDING.md + native Termux flags)
               meson setup build-bionic \
                 -Dbuildtype=debugoptimized \
                 -Dvulkan-drivers=panfrost \
@@ -82,29 +68,19 @@ jobs:
                 -Dlibunwind=disabled \
                 -Dvalgrind=disabled \
                 -Dperfetto=false \
-                -Dgallium-rusticl=false \
-                -Dgallium-clover=false \
-                -Dmicrosoft-clc=disabled \
-                -Dmesa-clc=auto \
                 -Dpanvk-use-kbase=true \
                 -Dprefix="$PREFIX" \
                 -Dc_link_args=-landroid-shmem \
                 -Dcpp_link_args=-landroid-shmem
 
-              # Build ONLY the PanVK shared library — the biggest speedup
+              # Build ONLY the PanVK shared library — this is the biggest speedup
               ninja -C build-bionic -j$(nproc) \
                 src/panfrost/vulkan/libvulkan_panfrost.so
 
               mkdir -p /termux-out/lib
               mkdir -p /termux-out/share/vulkan/icd.d
-
-              # Strip debug symbols before copying (shrinks the release .so)
-              find build-bionic -name "libvulkan_panfrost*.so" \
-                -exec $PREFIX/bin/llvm-strip --strip-unneeded {} \; \
-                -exec cp {} /termux-out/lib/ \;
-
-              find build-bionic -name "panfrost_icd*.json" \
-                -exec cp {} /termux-out/share/vulkan/icd.d/ \;
+              find build-bionic -name "libvulkan_panfrost*.so" -exec cp {} /termux-out/lib/ \;
+              find build-bionic -name "panfrost_icd*.json" -exec cp {} /termux-out/share/vulkan/icd.d/ \;
 
               echo "=== /termux-out ==="
               find /termux-out -type f
