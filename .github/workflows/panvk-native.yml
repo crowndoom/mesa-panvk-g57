@@ -41,7 +41,7 @@ jobs:
                 vulkan-loader-generic libandroid-shmem libdrm libxcb \
                 xorgproto libx11 libxshmfence zlib zstd libexpat
 
-              pip install mako pyyaml packaging
+              pip install --break-system-packages meson mako pyyaml packaging
 
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
