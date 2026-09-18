@@ -5,13 +5,17 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to create (leave empty to auto-generate from date/time)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
   build:
-    # Native ARM64 runner — no QEMU, matches the dev's native Termux build
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
 
@@ -19,8 +23,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── NEW: generate date + time (UTC) for release naming ──
-      - name: Compute build timestamp
+      # ── Compute date + time + a safe tag name ──
+      - name: Compute build timestamp and tag
         id: ts
         run: |
           DATE=$(date -u +'%Y-%m-%d')
@@ -31,17 +35,27 @@ jobs:
           echo "time=$TIME"           >> "$GITHUB_OUTPUT"
           echo "stamp=$STAMP"         >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "Build stamp: $STAMP (${SHORT_SHA})"
+
+          # Decide the tag name:
+          #  - if triggered by a v* tag push  -> use that tag
+          #  - else (manual dispatch)         -> use input, or auto-generate
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          else
+            TAG="build-${DATE}-${TIME}-${SHORT_SHA}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: $TAG"
 
       - name: Build PanVK inside native Termux container
         run: |
           set -euo pipefail
 
           mkdir -p "${{ github.workspace }}/termux-out"
-          # Grant global write permissions so the Docker container user can write to it
           chmod 777 "${{ github.workspace }}/termux-out"
 
-          # Host is real aarch64 -> no --platform / --privileged / QEMU needed
           docker run --rm \
             -v "${{ github.workspace }}/termux-out:/termux-out" \
             termux/termux-docker:aarch64 \
@@ -51,7 +65,6 @@ jobs:
 
               pkg update -y
 
-              # Exact dependency list from the dev'"'"'s working recipe
               pkg install -y \
                 git clang lld  ninja python python-pip pkg-config \
                 bison flex cmake glslang shaderc vulkan-headers \
@@ -67,7 +80,6 @@ jobs:
               git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
               cd mesa-panvk
 
-              # Exact dev recipe (BUILDING.md + native Termux flags)
               meson setup build-bionic \
                 -Dbuildtype=debugoptimized \
                 -Dvulkan-drivers=panfrost \
@@ -88,7 +100,6 @@ jobs:
                 -Dc_link_args=-landroid-shmem \
                 -Dcpp_link_args=-landroid-shmem
 
-              # Build ONLY the PanVK shared library — this is the biggest speedup
               ninja -C build-bionic -j$(nproc) \
                 src/panfrost/vulkan/libvulkan_panfrost.so
 
@@ -101,7 +112,6 @@ jobs:
               find /termux-out -type f
             '
 
-      # ── NEW: package the output into a timestamped tarball ──
       - name: Package artifact tarball
         run: |
           set -euo pipefail
@@ -120,19 +130,19 @@ jobs:
             termux-out/
             ${{ env.TARBALL }}
 
-      # ── UPDATED: release name now includes date + time ──
+      # ── ALWAYS create a release (tag push OR manual dispatch) ──
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: "${{ github.ref_name }} — PanVK build ${{ steps.ts.outputs.date }} ${{ steps.ts.outputs.time }} UTC"
+          tag_name: ${{ steps.ts.outputs.tag }}
+          name: "${{ steps.ts.outputs.tag }} — PanVK build ${{ steps.ts.outputs.date }} ${{ steps.ts.outputs.time }} UTC"
           body: |
             ## PanVK for Termux (aarch64, native build)
 
             **Build date (UTC):** `${{ steps.ts.outputs.date }}`
             **Build time (UTC):** `${{ steps.ts.outputs.time }}`
             **Commit:** `${{ github.sha }}` (`${{ steps.ts.outputs.short_sha }}`)
-            **Ref:** `${{ github.ref_name }}`
+            **Triggered by:** `${{ github.event_name }}`
 
             ### Files
             - `${{ env.TARBALL }}` — full install tree (extract into `$PREFIX`)
@@ -150,6 +160,5 @@ jobs:
             termux-out/share/vulkan/icd.d/*.json
           generate_release_notes: true
           prerelease: true
-          tag_name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
