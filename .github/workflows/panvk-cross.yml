@@ -85,9 +85,6 @@ jobs:
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           sudo tee /usr/local/bin/android-cross-cc > /dev/null << EOF
           #!/bin/bash
-          # Meson sanity check produces a dynamic Bionic ELF that qemu-user-static
-          # cannot load (no /system/bin/linker64 on the host). Force -static for
-          # invocations that look like the sanity check.
           for arg in "\$@"; do
             case "\$arg" in
               *sanitycheck*)
@@ -109,10 +106,12 @@ jobs:
           exec "${NDK_BIN}/aarch64-linux-android29-clang++" "\$@"
           EOF
           sudo chmod 755 /usr/local/bin/android-cross-cc /usr/local/bin/android-cross-cxx
-          printf 'int main(void){return 0;}\n' > /tmp/sc.c
-          /usr/local/bin/android-cross-cc /tmp/sc.c -o /tmp/sc
-          file /tmp/sc
-          qemu-aarch64-static /tmp/sc && echo "static sanity binary runs OK"
+
+          # Smoke test mirrors Meson's actual filenames.
+          printf 'int main(void){return 0;}\n' > /tmp/sanitycheckc.c
+          /usr/local/bin/android-cross-cc /tmp/sanitycheckc.c -o /tmp/sanitycheckc
+          file /tmp/sanitycheckc
+          qemu-aarch64-static /tmp/sanitycheckc && echo "static sanity binary runs OK"
 
       - name: Clone Mesa PanVK fork
         run: git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
@@ -120,16 +119,11 @@ jobs:
       - name: Strip libudev from Mesa
         run: |
           cd ~/mesa-panvk
-          # Replace the whole dependency('libudev', ...) call with a clean one,
-          # so no duplicate required:/version: keywords survive.
           sed -i -E "s/dependency\('libudev'[^)]*\)/dependency('libudev', required : false, disabler : true)/g" meson.build
           sed -i "s/has_header('libudev.h')/false/g" meson.build
           echo "=== libudev references ==="
           grep -n "libudev" meson.build || true
 
-      # ------------------------------------------------------------------
-      # Fix #1 — vtn_bindgen2 (src/compiler/spirv/meson.build)
-      # ------------------------------------------------------------------
       - name: Fix vtn_bindgen2 for cross build
         run: |
           cd ~/mesa-panvk
@@ -140,9 +134,6 @@ jobs:
           echo "=== vtn_bindgen2 block ==="
           sed -n '/prog_vtn_bindgen2 = executable/,/^   )/p' src/compiler/spirv/meson.build
 
-      # ------------------------------------------------------------------
-      # Fix #2 — remove with_panfrost_vk from with_driver_using_cl
-      # ------------------------------------------------------------------
       - name: Drop PanVK from CLC drivers list
         run: |
           cd ~/mesa-panvk
@@ -152,9 +143,6 @@ jobs:
           echo "=== with_driver_using_cl ==="
           sed -n '/with_driver_using_cl = \[/,/\].contains(true)/p' meson.build
 
-      # ------------------------------------------------------------------
-      # Fix #3 — guard src/poly subdirs when CLC is off
-      # ------------------------------------------------------------------
       - name: Guard src/poly CLC subdir when CLC is off
         run: |
           cd ~/mesa-panvk
