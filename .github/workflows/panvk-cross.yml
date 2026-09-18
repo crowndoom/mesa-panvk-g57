@@ -5,11 +5,6 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      mesa_version:
-        description: 'Mesa version / branch'
-        required: false
-        default: 'main'
 
 permissions:
   contents: write
@@ -20,9 +15,6 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      # ------------------------------------------------------------------
-      # 1. Host build tools
-      # ------------------------------------------------------------------
       - name: Install host build tools
         run: |
           sudo apt update
@@ -31,9 +23,6 @@ jobs:
           pip install --user meson mako pyyaml packaging ply
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      # ------------------------------------------------------------------
-      # 2. Android NDK
-      # ------------------------------------------------------------------
       - name: Download Android NDK
         run: |
           NDK_VERSION="r29"
@@ -42,9 +31,6 @@ jobs:
           echo "ANDROID_NDK_HOME=/opt/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
           chmod +x /opt/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/*
 
-      # ------------------------------------------------------------------
-      # 3. Termux sysroot
-      # ------------------------------------------------------------------
       - name: Setup Termux sysroot
         run: |
           mkdir termux && cd termux
@@ -64,13 +50,9 @@ jobs:
             sudo touch /data/data/com.termux/files/usr/include/android_lf.h
           fi
 
-      # ------------------------------------------------------------------
-      # 4. PanVK-specific packages into the sysroot
-      # ------------------------------------------------------------------
       - name: Install PanVK packages into Termux sysroot
         run: |
           mkdir -p /tmp/panvk-debs && cd /tmp/panvk-debs
-
           base="https://packages.termux.dev/apt/termux-main/pool/main"
           wget -q "$base/libd/libdrm/libdrm_2.4.134_aarch64.deb"                            || true
           wget -q "$base/liba/libandroid-shmem/libandroid-shmem_0.6_aarch64.deb"            || true
@@ -78,96 +60,79 @@ jobs:
           wget -q "$base/s/spirv-tools/spirv-tools_1.4.350.0_aarch64.deb"                   || true
           wget -q "$base/s/spirv-llvm-translator/spirv-llvm-translator_21.1.7_aarch64.deb"  || true
           wget -q "$base/libx/libxcb/libxcb_1.17.0-1_aarch64.deb"                           || true
-
           for deb in *.deb; do
             [ -f "$deb" ] && dpkg-deb -x "$deb" /tmp/panvk-debs/extracted/
           done
-
           sudo cp -r /tmp/panvk-debs/extracted/data/data/com.termux/files/usr/* \
                      /data/data/com.termux/files/usr/ || true
           sudo chmod -R 755 /data/data/com.termux/files/usr/lib || true
           sudo chmod -R 755 /data/data/com.termux/files/usr/include || true
 
       # ------------------------------------------------------------------
-      # 5. libatomic.a — for cc.find_library('atomic') at meson.build:1541
+      # libatomic:
+      #   cc.find_library('atomic') runs a raw link test with -latomic.
+      #   It does NOT search the Termux libdir; it only searches the
+      #   compiler's own paths. Two requirements to make it pass:
       #
-      #  cc.find_library does a direct link test with -latomic, which only
-      #  searches the compiler's default library paths (i.e. the NDK
-      #  sysroot). So we install libatomic.a in BOTH:
-      #    - Termux sysroot  (pkg-config lookup / -L convenience)
-      #    - NDK sysroot     (default linker search for the link test)
+      #   (a) a REAL libatomic.a (with atomic symbols) must exist, and
+      #   (b) the compiler must be told to search that dir (-L, step 11).
       #
-      #  Three-tier fallback:
-      #    1. Download the Termux clang .deb (it bundles libatomic.a).
-      #    2. Reuse libclang_rt.builtins-aarch64-android.a from the NDK
-      #       (it contains the same atomic symbols, just a different name).
-      #    3. Create an empty stub — clang lowers aarch64 atomics to
-      #       inline ldxr/stxr builtins, so an empty archive is enough
-      #       for find_library to succeed without affecting codegen.
+      #   The empty stub was wrong: the link test needs real symbols.
+      #   We get them from the NDK's compiler-rt archive, whose
+      #   filename and location vary between NDK releases.
       # ------------------------------------------------------------------
-      - name: Provide libatomic to Termux + NDK sysroots
+      - name: Provide real libatomic.a
         run: |
           set -euo pipefail
-
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          NDK_SYSROOT_LIB="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
           TERMUX_LIB=/data/data/com.termux/files/usr/lib
+          NDK_SYSROOT_LIB="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
 
-          sudo mkdir -p "$NDK_SYSROOT_LIB" "$TERMUX_LIB"
+          sudo mkdir -p "$TERMUX_LIB" "$NDK_SYSROOT_LIB"
 
           ATOMIC_SRC=""
 
-          # --- Tier 1: Termux clang .deb ---
-          cd /tmp
-          CLANG_URL="https://packages.termux.dev/apt/termux-main/pool/main/c/clang/clang_21.1.8-3_aarch64.deb"
-          if wget -q "$CLANG_URL" -O clang.deb; then
-            mkdir -p /tmp/clang_extract
-            dpkg-deb -x clang.deb /tmp/clang_extract || true
-            FOUND=$(find /tmp/clang_extract -name 'libatomic.a' -print -quit || true)
-            if [ -n "$FOUND" ]; then
-              ATOMIC_SRC="$FOUND"
-              echo "Tier 1: using libatomic.a from Termux clang package"
-            fi
-          fi
+          # Tier 1: real libatomic.a shipped somewhere under the NDK
+          ATOMIC_SRC=$(find "$ANDROID_NDK_HOME" -name 'libatomic.a' -print -quit || true)
 
-          # --- Tier 2: NDK's clang_rt.builtins archive (contains atomics) ---
+          # Tier 2: compiler-rt builtins archive (same atomic symbols, different name)
           if [ -z "$ATOMIC_SRC" ]; then
-            FOUND=$(find "$ANDROID_NDK_HOME" -name 'libclang_rt.builtins-aarch64-android.a' -print -quit || true)
-            if [ -n "$FOUND" ]; then
-              ATOMIC_SRC="$FOUND"
-              echo "Tier 2: using NDK clang_rt.builtins archive as libatomic.a"
+            ATOMIC_SRC=$(find "$ANDROID_NDK_HOME" -name 'libclang_rt.builtins-aarch64-android.a' -print -quit || true)
+          fi
+
+          # Tier 3: Termux clang .deb bundles a real libatomic.a
+          if [ -z "$ATOMIC_SRC" ]; then
+            cd /tmp
+            URL="https://packages.termux.dev/apt/termux-main/pool/main/c/clang/clang_21.1.8-3_aarch64.deb"
+            if wget -q "$URL" -O clang.deb; then
+              mkdir -p clang_x && dpkg-deb -x clang.deb clang_x || true
+              ATOMIC_SRC=$(find clang_x -name 'libatomic.a' -print -quit || true)
             fi
           fi
 
-          # --- Tier 3: empty stub ---
+          # Tier 4: last-resort empty stub — only useful when combined with -L,
+          # because clang lowers aarch64 atomics inline.
           if [ -z "$ATOMIC_SRC" ]; then
             echo 'int __libatomic_stub;' > /tmp/atomic_stub.c
             "$NDK_BIN/aarch64-linux-android29-clang" -c /tmp/atomic_stub.c -o /tmp/atomic_stub.o
             "$NDK_BIN/llvm-ar" rcs /tmp/libatomic_stub.a /tmp/atomic_stub.o
             ATOMIC_SRC=/tmp/libatomic_stub.a
-            echo "Tier 3: created empty libatomic.a stub"
+            echo "WARN: only empty stub available; -L fix must still apply"
           fi
 
-          # Install into both locations under the name libatomic.a
+          echo "libatomic source: $ATOMIC_SRC"
           sudo cp "$ATOMIC_SRC" "$TERMUX_LIB/libatomic.a"
           sudo cp "$ATOMIC_SRC" "$NDK_SYSROOT_LIB/libatomic.a"
           sudo chmod 644 "$TERMUX_LIB/libatomic.a" "$NDK_SYSROOT_LIB/libatomic.a"
 
-          echo "=== libatomic.a installed ==="
-          ls -lh "$TERMUX_LIB/libatomic.a"
-          ls -lh "$NDK_SYSROOT_LIB/libatomic.a"
-
-          # Sanity: can the cross compiler actually resolve -latomic now?
+          echo "=== -latomic link test with -L into Termux libdir ==="
           echo 'int main(void){return 0;}' > /tmp/atomictest.c
-          if "$NDK_BIN/aarch64-linux-android29-clang" /tmp/atomictest.c -latomic -o /tmp/atomictest; then
-            echo "OK: -latomic link test passes"
+          if "$NDK_BIN/aarch64-linux-android29-clang" /tmp/atomictest.c -L"$TERMUX_LIB" -latomic -o /tmp/atomictest; then
+            echo "OK: -latomic resolves via Termux libdir"
           else
-            echo "WARN: -latomic link test still failing"
+            echo "FAIL: link test still failing"; exit 1
           fi
 
-      # ------------------------------------------------------------------
-      # 6. pkg-config wrapper: turn Termux -I into -idirafter
-      # ------------------------------------------------------------------
       - name: Setup pkg-config wrapper
         run: |
           sudo tee /usr/local/bin/termux-pkg-config > /dev/null << 'SCRIPT'
@@ -178,51 +143,37 @@ jobs:
           SCRIPT
           sudo chmod +x /usr/local/bin/termux-pkg-config
 
-      # ------------------------------------------------------------------
-      # 7. Clone the PanVK fork
-      # ------------------------------------------------------------------
       - name: Clone Mesa PanVK fork
         run: |
           git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
-      # ------------------------------------------------------------------
-      # 8. Strip libudev
-      # ------------------------------------------------------------------
       - name: Strip libudev from Mesa build files
         run: |
           cd ~/mesa-panvk
           sed -i "s/dependency('libudev',/dependency('libudev', required : false, disabler : true, /g" meson.build
           sed -i "s/has_header('libudev.h')/false/g" meson.build
 
-      # ------------------------------------------------------------------
-      # 9. Mock libudev.h + Bionic pthread stubs
-      # ------------------------------------------------------------------
       - name: Inject Mock Libudev Headers
         run: |
           sudo mkdir -p /data/data/com.termux/files/usr/include
           sudo tee /data/data/com.termux/files/usr/include/libudev.h > /dev/null << 'EOF'
           #ifndef MOCK_LIBUDEV_H
           #define MOCK_LIBUDEV_H
-
           #include <pthread.h>
-
           #ifndef PTHREAD_CANCEL_ASYNCHRONOUS
           #define PTHREAD_CANCEL_ASYNCHRONOUS 0
           #endif
           #ifndef PTHREAD_CANCEL_ENABLE
           #define PTHREAD_CANCEL_ENABLE 1
           #endif
-
           static inline int pthread_setcanceltype(int type, int *oldtype) { return 0; }
           static inline int pthread_setcancelstate(int state, int *oldstate) { return 0; }
           static inline int pthread_cancel(pthread_t thread) { return 0; }
           static inline void pthread_testcancel(void) {}
-
           struct udev;
           struct udev_device;
           struct udev_monitor;
           struct udev_enumerate;
-
           static inline struct udev *udev_new(void) { return 0; }
           static inline struct udev *udev_ref(struct udev *u) { return u; }
           static inline void udev_unref(struct udev *u) {}
@@ -231,20 +182,15 @@ jobs:
           static inline void udev_device_unref(struct udev_device *d) {}
           static inline const char *udev_device_get_devnode(struct udev_device *d) { return 0; }
           static inline const char *udev_device_get_property_value(struct udev_device *d, const char *p) { return 0; }
-
           #endif
           EOF
           sudo chmod 644 /data/data/com.termux/files/usr/include/libudev.h
 
-      # ------------------------------------------------------------------
-      # 10. Meson cross file
-      # ------------------------------------------------------------------
       - name: Create Meson cross file
         run: |
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           API=29
           TARGET="aarch64-linux-android"
-
           cat > ~/cross_file.txt <<EOF
           [host_machine]
           system = 'linux'
@@ -258,11 +204,12 @@ jobs:
           ar = '${NDK_BIN}/llvm-ar'
           strip = '${NDK_BIN}/llvm-strip'
           pkg-config = 'termux-pkg-config'
+
+          [built-in options]
+          c_link_args = ['-L/data/data/com.termux/files/usr/lib']
+          cpp_link_args = ['-L/data/data/com.termux/files/usr/lib']
           EOF
 
-      # ------------------------------------------------------------------
-      # 11. Configure
-      # ------------------------------------------------------------------
       - name: Configure Mesa build for PanVK
         run: |
           meson setup build ~/mesa-panvk \
@@ -283,19 +230,13 @@ jobs:
             -Dvalgrind=disabled \
             -Dperfetto=false \
             -Dprefix=/data/data/com.termux/files/usr \
-            -Dc_link_args=-landroid-shmem \
-            -Dcpp_link_args=-landroid-shmem
+            -Dc_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem" \
+            -Dcpp_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem"
 
-      # ------------------------------------------------------------------
-      # 12. Build only the PanVK library
-      # ------------------------------------------------------------------
       - name: Build PanVK shared library
         run: |
           ninja -C build -j$(nproc) src/panfrost/vulkan/libvulkan_panfrost.so
 
-      # ------------------------------------------------------------------
-      # 13. Package
-      # ------------------------------------------------------------------
       - name: Package PanVK artifacts
         run: |
           mkdir -p panvk_out/lib panvk_out/share/vulkan/icd.d
@@ -310,9 +251,6 @@ jobs:
           name: panvk-aarch64
           path: panvk-aarch64.tar.xz
 
-      # ------------------------------------------------------------------
-      # 14. Release
-      # ------------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
