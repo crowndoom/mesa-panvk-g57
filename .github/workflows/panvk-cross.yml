@@ -1,4 +1,4 @@
-name: Build PanVK for Termux (aarch64)
+name: cross PanVK for Termux (aarch64) — cross-compiled
 
 on:
   push:
@@ -12,111 +12,239 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
 
     steps:
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Build PanVK inside Termux container
+      # ------------------------------------------------------------------
+      # 1. Host build tools (native x86_64)
+      # ------------------------------------------------------------------
+      - name: Install host build tools
         run: |
-          set -euo pipefail
+          sudo apt update
+          sudo apt install -y ninja-build pkg-config python3-mako python3-pip \
+            glslang-tools flex bison curl ca-certificates patch unzip wget
+          pip install --user meson==1.4.0 mako pyyaml packaging
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-          mkdir -p "${{ github.workspace }}/termux-out"
+      # ------------------------------------------------------------------
+      # 2. Android NDK (native cross-compiler)
+      # ------------------------------------------------------------------
+      - name: Download and setup Android NDK
+        run: |
+          NDK_VERSION="r29"
+          NDK_ZIP="android-ndk-${NDK_VERSION}-linux.zip"
+          wget -q "https://dl.google.com/android/repository/${NDK_ZIP}"
+          unzip -q ${NDK_ZIP} -d /opt
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
+          chmod +x /opt/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/*
 
-          docker run --rm \
-            --privileged \
-            --platform linux/arm64 \
-            -v "${{ github.workspace }}/termux-out:/termux-out" \
-            termux/termux-docker:aarch64 \
-            bash -c '
-              set -euo pipefail
+      # ------------------------------------------------------------------
+      # 3. Termux sysroot
+      # ------------------------------------------------------------------
+      - name: Setup Termux sysroot
+        run: |
+          mkdir termux && cd termux
+          wget -q https://github.com/xodiosx/Wine-arm64ce/releases/download/wine-14/termux-rootfs.tar
+          tar xf termux-rootfs.tar
+          sudo mv data /data
+          sudo chown -R $(whoami):$(whoami) /data
+          mkdir -p /data/data/com.termux/files/usr/tmp
+          sudo chmod -R a+rX /data/data/com.termux/files/usr
 
-              # Termux native prefix. Hard-set it so set -u does not abort.
-              export PREFIX="/data/data/com.termux/files/usr"
-              export HOME="/data/data/com.termux/files/home"
-              export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
-              export PATH="$PREFIX/bin:$PREFIX/bin/applets:$HOME/.local/bin:$PATH"
+      - name: Provide android_lf.h to Termux sysroot
+        run: |
+          NDK_HEADER=$(find /opt/android-ndk-r29 -name android_lf.h -print -quit)
+          if [ -n "$NDK_HEADER" ]; then
+            sudo cp "$NDK_HEADER" /data/data/com.termux/files/usr/include/
+          else
+            sudo touch /data/data/com.termux/files/usr/include/android_lf.h
+          fi
 
-              pkg update -y
-              pkg install -y \
-                git clang lld meson ninja \
-                python python-pip pkg-config \
-                bison flex cmake \
-                glslang shaderc vulkan-headers vulkan-loader-generic \
-                libandroid-shmem libdrm libxcb xorgproto \
-                libx11 libxshmfence zlib zstd expat
+      # ------------------------------------------------------------------
+      # 4. Extra Termux packages PanVK needs
+      # ------------------------------------------------------------------
+      - name: Install PanVK-specific packages into Termux sysroot
+        run: |
+          mkdir -p /tmp/panvk-debs && cd /tmp/panvk-debs
 
-              pip install --break-system-packages mako pyyaml packaging
+          # Required by Mesa's PanVK configure / link
+          wget -q https://packages.termux.dev/apt/termux-main/pool/main/s/spirv-tools/spirv-tools_1.4.350.0_aarch64.deb || true
+          wget -q https://packages.termux.dev/apt/termux-main/pool/main/s/spirv-llvm-translator/spirv-llvm-translator_21.1.7_aarch64.deb || true
+          wget -q https://packages.termux.dev/apt/termux-main/pool/main/libc/libclc/libclc_21.1.3-1_all.deb || true
+          wget -q https://packages.termux.dev/apt/termux-main/pool/main/libd/libdrm/libdrm_2.4.134_aarch64.deb || true
+          wget -q https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.6_aarch64.deb || true
+          wget -q https://packages.termux.dev/apt/termux-main/pool/main/libx/libxcb/libxcb_1.17.0-1_aarch64.deb || true
 
-              command -v meson || { echo "ERROR: meson not found"; exit 1; }
+          for deb in *.deb; do
+            [ -f "$deb" ] && dpkg-deb -x "$deb" /tmp/panvk-debs/extracted/
+          done
 
-              mkdir -p "$TMPDIR"
-              cd "$TMPDIR"
-              rm -rf mesa-panvk
-              git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
-              cd mesa-panvk
+          sudo cp -r /tmp/panvk-debs/extracted/data/data/com.termux/files/usr/* \
+                     /data/data/com.termux/files/usr/ || true
+          sudo chmod -R 755 /data/data/com.termux/files/usr/lib || true
+          sudo chmod -R 755 /data/data/com.termux/files/usr/include || true
 
-              # Patch the core count API mismatch in the fork
-              sed -i "s/unsigned pan_query_core_count(const struct pan_kmod_dev_props \*props);/unsigned pan_query_core_count(const struct pan_kmod_dev_props *props, unsigned *core_id_range);/" \
-                src/panfrost/lib/pan_props.h
-              grep -n "pan_query_core_count" src/panfrost/lib/pan_props.h
+      # ------------------------------------------------------------------
+      # 5. pkg-config wrapper (idirafter trick)
+      # ------------------------------------------------------------------
+      - name: Setup pkg-config wrapper
+        run: |
+          sudo tee /usr/local/bin/termux-pkg-config > /dev/null << 'SCRIPT'
+          #!/bin/bash
+          export PKG_CONFIG_PATH=/data/data/com.termux/files/usr/lib/pkgconfig
+          /usr/bin/pkg-config "$@" | \
+            sed 's|-I/data/data/com.termux/files/usr/include|-idirafter /data/data/com.termux/files/usr/include|g'
+          SCRIPT
+          sudo chmod +x /usr/local/bin/termux-pkg-config
 
-              meson setup build-bionic \
-                -Dbuildtype=debugoptimized \
-                -Dvulkan-drivers=panfrost \
-                -Dgallium-drivers= \
-                -Dpanfrost-kmds=kbase,panthor \
-                -Dplatforms=x11 \
-                -Dglx=disabled \
-                -Degl=disabled \
-                -Dopengl=false \
-                -Dgles1=disabled \
-                -Dgles2=disabled \
-                -Dbuild-tests=false \
-                -Dlibunwind=disabled \
-                -Dvalgrind=disabled \
-                -Dperfetto=false \
-                -Dgallium-rusticl=false \
-                -Dgallium-clover=false \
-                -Dmicrosoft-clc=disabled \
-                -Dpanvk-use-kbase=true \
-                -Dprefix="$PREFIX" \
-                -Dc_link_args=-landroid-shmem \
-                -Dcpp_link_args=-landroid-shmem
+      # ------------------------------------------------------------------
+      # 6. Clone the PanVK Mesa fork
+      # ------------------------------------------------------------------
+      - name: Clone Mesa PanVK fork
+        run: |
+          git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
-              ninja -C build-bionic -j4 src/panfrost/vulkan/libvulkan_panfrost.so
+      # ------------------------------------------------------------------
+      # 7. Strip libudev
+      # ------------------------------------------------------------------
+      - name: Strip libudev from Mesa build files
+        run: |
+          cd ~/mesa-panvk
+          sed -i "s/dependency('libudev',/dependency('libudev', required : false, disabler : true, /g" meson.build
+          sed -i "s/has_header('libudev.h')/false/g" meson.build
 
-              mkdir -p /termux-out/lib
-              mkdir -p /termux-out/share/vulkan/icd.d
+      # ------------------------------------------------------------------
+      # 8. Mock libudev.h + Bionic pthread stubs
+      # ------------------------------------------------------------------
+      - name: Inject Mock Libudev Headers for Termux Compatibility
+        run: |
+          sudo mkdir -p /data/data/com.termux/files/usr/include
+          sudo tee /data/data/com.termux/files/usr/include/libudev.h > /dev/null << 'EOF'
+          #ifndef MOCK_LIBUDEV_H
+          #define MOCK_LIBUDEV_H
 
-              find build-bionic -name "libvulkan_panfrost*.so" -exec cp {} /termux-out/lib/ \;
-              find build-bionic -name "panfrost_icd*.json" -exec cp {} /termux-out/share/vulkan/icd.d/ \;
+          #include <pthread.h>
 
-              echo "=== Contents of /termux-out ==="
-              find /termux-out -type f
-            '
+          #ifndef PTHREAD_CANCEL_ASYNCHRONOUS
+          #define PTHREAD_CANCEL_ASYNCHRONOUS 0
+          #endif
+          #ifndef PTHREAD_CANCEL_ENABLE
+          #define PTHREAD_CANCEL_ENABLE 1
+          #endif
 
-      - name: Upload PanVK artefacts
+          static inline int pthread_setcanceltype(int type, int *oldtype) { return 0; }
+          static inline int pthread_setcancelstate(int state, int *oldstate) { return 0; }
+          static inline int pthread_cancel(pthread_t thread) { return 0; }
+          static inline void pthread_testcancel(void) {}
+
+          struct udev;
+          struct udev_device;
+          struct udev_monitor;
+          struct udev_enumerate;
+
+          static inline struct udev *udev_new(void) { return 0; }
+          static inline struct udev *udev_ref(struct udev *u) { return u; }
+          static inline void udev_unref(struct udev *u) {}
+          static inline struct udev_device *udev_device_new_from_syspath(struct udev *u, const char *p) { return 0; }
+          static inline struct udev_device *udev_device_ref(struct udev_device *d) { return d; }
+          static inline void udev_device_unref(struct udev_device *d) {}
+          static inline const char *udev_device_get_devnode(struct udev_device *d) { return 0; }
+          static inline const char *udev_device_get_property_value(struct udev_device *d, const char *p) { return 0; }
+
+          #endif
+          EOF
+          sudo chmod 644 /data/data/com.termux/files/usr/include/libudev.h
+
+      # ------------------------------------------------------------------
+      # 9. Meson cross file
+      # ------------------------------------------------------------------
+      - name: Create Meson cross file
+        run: |
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          API=29
+          TARGET="aarch64-linux-android"
+
+          cat > ~/cross_file.txt <<EOF
+          [host_machine]
+          system = 'linux'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
+
+          [binaries]
+          c = '${NDK_BIN}/${TARGET}${API}-clang'
+          cpp = '${NDK_BIN}/${TARGET}${API}-clang++'
+          ar = '${NDK_BIN}/llvm-ar'
+          strip = '${NDK_BIN}/llvm-strip'
+          pkg-config = 'termux-pkg-config'
+          EOF
+
+      # ------------------------------------------------------------------
+      # 10. Configure PanVK — exact flags from the developer's recipe
+      # ------------------------------------------------------------------
+      - name: Configure Mesa build for PanVK
+        run: |
+          meson setup build ~/mesa-panvk \
+            --cross-file ~/cross_file.txt \
+            -Dbuildtype=debugoptimized \
+            -Dvulkan-drivers=panfrost \
+            -Dgallium-drivers= \
+            -Dpanfrost-kmds=kbase,panthor \
+            -Dpanvk-use-kbase=true \
+            -Dplatforms=x11 \
+            -Dglx=disabled \
+            -Degl=disabled \
+            -Dopengl=false \
+            -Dgles1=disabled \
+            -Dgles2=disabled \
+            -Dbuild-tests=false \
+            -Dlibunwind=disabled \
+            -Dvalgrind=disabled \
+            -Dperfetto=false \
+            -Dllvm=disabled \
+            -Dgallium-rusticl=false \
+            -Dgallium-clover=false \
+            -Dmicrosoft-clc=disabled \
+            -Dprefix=/data/data/com.termux/files/usr \
+            -Dc_link_args=-landroid-shmem \
+            -Dcpp_link_args=-landroid-shmem
+
+      # ------------------------------------------------------------------
+      # 11. Build ONLY the PanVK .so target — same as the developer
+      # ------------------------------------------------------------------
+      - name: Build PanVK shared library
+        run: |
+          ninja -C build -j$(nproc) src/panfrost/vulkan/libvulkan_panfrost.so
+
+      # ------------------------------------------------------------------
+      # 12. Package
+      # ------------------------------------------------------------------
+      - name: Package PanVK artifacts
+        run: |
+          mkdir -p panvk_out/lib
+          mkdir -p panvk_out/share/vulkan/icd.d
+
+          cp build/src/panfrost/vulkan/libvulkan_panfrost.so panvk_out/lib/
+
+          # ICD JSON: pick whatever the build generated
+          find build -name "panfrost_icd*.json" -exec cp {} panvk_out/share/vulkan/icd.d/ \; || true
+
+          tar -cJf panvk-aarch64.tar.xz -C panvk_out .
+          ls -lh panvk-aarch64.tar.xz
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: panvk-termux-aarch64
-          path: termux-out/
+          name: panvk-aarch64
+          path: panvk-aarch64.tar.xz
 
+      # ------------------------------------------------------------------
+      # 13. Release on tags
+      # ------------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            termux-out/lib/libvulkan_panfrost*.so
-            termux-out/share/vulkan/icd.d/*.json
+          files: panvk-aarch64.tar.xz
           generate_release_notes: true
           prerelease: true
           tag_name: ${{ github.ref_name }}
