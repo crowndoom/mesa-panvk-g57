@@ -39,23 +39,19 @@ jobs:
             bash -c '
               set -euo pipefail
 
-              # Termux does not export TMPDIR in non-interactive shells.
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
 
               pkg update -y
-
               pkg install -y \
-                git ninja clang llvm \
-                bison flex \
-                glslang libclc spirv-tools \
-                libandroid-shmem libdrm libelf libexpat \
-                libx11 libxext libxfixes libxrandr \
-                libxshmfence libxxf86vm vulkan-loader \
-                zlib zstd pkg-config python python-pip cmake spirv-llvm-translator
+                git clang lld meson ninja \
+                python python-pip pkg-config \
+                bison flex cmake \
+                glslang shaderc vulkan-headers vulkan-loader-generic \
+                libandroid-shmem libdrm libxcb xorgproto \
+                libx11 libxshmfence zlib zstd expat
 
-              pip install --break-system-packages meson mako pyyaml packaging ply
+              pip install --break-system-packages mako pyyaml packaging
 
-              # Ensure meson is on PATH regardless of where pip put it
               export PATH="$HOME/.local/bin:$PREFIX/bin:$PATH"
               command -v meson || { echo "ERROR: meson not found"; exit 1; }
 
@@ -65,26 +61,35 @@ jobs:
               git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
               cd mesa-panvk
 
-              # -------------------------------------------------------
-              # Configure Mesa for kbase JM on Termux
-              #
-              # -Dpanfrost-kmds=kbase    -> defines HAVE_PAN_KMOD_KBASE
-              # -Dpanvk-use-kbase=true   -> compiles the kbase submit path
-              # -Dgallium-drivers=panfrost -> required alongside panvk
-              # -------------------------------------------------------
-              meson setup build-bionic \
-                -Dpanfrost-kmds=kbase \
-                -Dpanvk-use-kbase=true \
-                -Dvulkan-drivers=panfrost \
-                -Dgallium-drivers=panfrost \
-                -Dllvm=enabled \
-                -Dcpp_std=c++17 \
-                -Dplatforms=x11 \
-                -Dc_link_args="-landroid-shmem" \
-                -Dcpp_link_args="-landroid-shmem" \
-                -Dbuildtype=release
+              # Patch the core count API mismatch in the fork
+              sed -i "s/unsigned pan_query_core_count(const struct pan_kmod_dev_props \*props);/unsigned pan_query_core_count(const struct pan_kmod_dev_props *props, unsigned *core_id_range);/" \
+                src/panfrost/lib/pan_props.h
+              grep -n "pan_query_core_count" src/panfrost/lib/pan_props.h
 
-              ninja -C build-bionic -j2
+              meson setup build-bionic \
+                -Dbuildtype=debugoptimized \
+                -Dvulkan-drivers=panfrost \
+                -Dgallium-drivers= \
+                -Dpanfrost-kmds=kbase,panthor \
+                -Dplatforms=x11 \
+                -Dglx=disabled \
+                -Degl=disabled \
+                -Dopengl=false \
+                -Dgles1=disabled \
+                -Dgles2=disabled \
+                -Dbuild-tests=false \
+                -Dlibunwind=disabled \
+                -Dvalgrind=disabled \
+                -Dperfetto=false \
+                -Dgallium-rusticl=false \
+                -Dgallium-clover=false \
+                -Dmicrosoft-clc=disabled \
+                -Dpanvk-use-kbase=true \
+                -Dprefix="$PREFIX" \
+                -Dc_link_args=-landroid-shmem \
+                -Dcpp_link_args=-landroid-shmem
+
+              ninja -C build-bionic -j4 src/panfrost/vulkan/libvulkan_panfrost.so
 
               mkdir -p /termux-out/lib
               mkdir -p /termux-out/share/vulkan/icd.d
