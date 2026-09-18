@@ -22,12 +22,13 @@ jobs:
       - name: Build PanVK inside native Termux container
         run: |
           set -euo pipefail
+          
           mkdir -p "${{ github.workspace }}/termux-out"
+          # Grant global write permissions so the Docker container user can write to it
+          chmod 777 "${{ github.workspace }}/termux-out"
 
-          # Host is real aarch64 -> no --platform / QEMU needed.
-          # --user root is required so the container can write to /termux-out.
+          # Host is real aarch64 -> no --platform / --privileged / QEMU needed
           docker run --rm \
-            --user root \
             -v "${{ github.workspace }}/termux-out:/termux-out" \
             termux/termux-docker:aarch64 \
             bash -c '
@@ -38,7 +39,7 @@ jobs:
 
               # Exact dependency list from the dev'"'"'s working recipe
               pkg install -y \
-                git clang lld ninja python python-pip pkg-config \
+                git clang lld  ninja python python-pip pkg-config \
                 bison flex cmake glslang shaderc vulkan-headers \
                 vulkan-loader-generic libandroid-shmem libdrm libxcb \
                 xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
