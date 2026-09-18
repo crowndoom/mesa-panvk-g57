@@ -39,7 +39,7 @@ jobs:
                 git clang lld  ninja python python-pip pkg-config \
                 bison flex cmake glslang shaderc vulkan-headers \
                 vulkan-loader-generic libandroid-shmem libdrm libxcb \
-                xorgproto libx11 libxshmfence zlib zstd libexpat
+                xorgproto libx11 libxshmfence zlib zstd libexpat libclc
 
               pip install --break-system-packages meson mako pyyaml packaging
 
