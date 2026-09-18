@@ -19,10 +19,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ── NEW: generate date + time (UTC) for release naming ──
+      - name: Compute build timestamp
+        id: ts
+        run: |
+          DATE=$(date -u +'%Y-%m-%d')
+          TIME=$(date -u +'%H%M%S')
+          STAMP="${DATE}-${TIME}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "date=$DATE"           >> "$GITHUB_OUTPUT"
+          echo "time=$TIME"           >> "$GITHUB_OUTPUT"
+          echo "stamp=$STAMP"         >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Build stamp: $STAMP (${SHORT_SHA})"
+
       - name: Build PanVK inside native Termux container
         run: |
           set -euo pipefail
-          
+
           mkdir -p "${{ github.workspace }}/termux-out"
           # Grant global write permissions so the Docker container user can write to it
           chmod 777 "${{ github.workspace }}/termux-out"
@@ -87,17 +101,51 @@ jobs:
               find /termux-out -type f
             '
 
+      # ── NEW: package the output into a timestamped tarball ──
+      - name: Package artifact tarball
+        run: |
+          set -euo pipefail
+          cd termux-out
+          TARBALL="panvk-termux-aarch64-${{ steps.ts.outputs.stamp }}.tar.gz"
+          tar -czvf "../${TARBALL}" .
+          cd ..
+          ls -lh "${TARBALL}"
+          echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: panvk-termux-aarch64
-          path: termux-out/
+          name: panvk-termux-aarch64-${{ steps.ts.outputs.stamp }}
+          path: |
+            termux-out/
+            ${{ env.TARBALL }}
 
+      # ── UPDATED: release name now includes date + time ──
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          name: "${{ github.ref_name }} — PanVK build ${{ steps.ts.outputs.date }} ${{ steps.ts.outputs.time }} UTC"
+          body: |
+            ## PanVK for Termux (aarch64, native build)
+
+            **Build date (UTC):** `${{ steps.ts.outputs.date }}`
+            **Build time (UTC):** `${{ steps.ts.outputs.time }}`
+            **Commit:** `${{ github.sha }}` (`${{ steps.ts.outputs.short_sha }}`)
+            **Ref:** `${{ github.ref_name }}`
+
+            ### Files
+            - `${{ env.TARBALL }}` — full install tree (extract into `$PREFIX`)
+            - `libvulkan_panfrost*.so` — Vulkan driver
+            - `panfrost_icd*.json` — ICD manifest
+
+            ### Install (Termux)
+            ```bash
+            tar -xzf ${{ env.TARBALL }} -C $PREFIX
+            export VK_ICD_FILENAMES=$PREFIX/share/vulkan/icd.d/panfrost_icd.aarch64.json
+            ```
           files: |
+            ${{ env.TARBALL }}
             termux-out/lib/libvulkan_panfrost*.so
             termux-out/share/vulkan/icd.d/*.json
           generate_release_notes: true
