@@ -21,7 +21,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------------
-      # 1. Host build tools (native x86_64)
+      # 1. Host build tools
       # ------------------------------------------------------------------
       - name: Install host build tools
         run: |
@@ -32,7 +32,7 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       # ------------------------------------------------------------------
-      # 2. Android NDK (x86_64 host -> aarch64 target)
+      # 2. Android NDK
       # ------------------------------------------------------------------
       - name: Download Android NDK
         run: |
@@ -43,7 +43,7 @@ jobs:
           chmod +x /opt/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/*
 
       # ------------------------------------------------------------------
-      # 3. Termux sysroot (headers + .so for aarch64 Termux)
+      # 3. Termux sysroot
       # ------------------------------------------------------------------
       - name: Setup Termux sysroot
         run: |
@@ -66,7 +66,6 @@ jobs:
 
       # ------------------------------------------------------------------
       # 4. PanVK-specific packages into the sysroot
-      #    (libdrm, libandroid-shmem, libclc, spirv tools, X11)
       # ------------------------------------------------------------------
       - name: Install PanVK packages into Termux sysroot
         run: |
@@ -90,37 +89,84 @@ jobs:
           sudo chmod -R 755 /data/data/com.termux/files/usr/include || true
 
       # ------------------------------------------------------------------
-      # 5. Provide libatomic to the Termux sysroot
-      #    Mesa's meson.build:1541 does cc.find_library('atomic') with a hard
-      #    requirement. The NDK ships neither a real libatomic.a nor a linker
-      #    stub, but clang already lowers aarch64 atomics to inline
-      #    ldxr/stxr builtins (the -latomic link test returned NO, proving
-      #    the library is not actually needed at codegen time). An empty
-      #    archive satisfies find_library without altering codegen.
+      # 5. libatomic.a — for cc.find_library('atomic') at meson.build:1541
+      #
+      #  cc.find_library does a direct link test with -latomic, which only
+      #  searches the compiler's default library paths (i.e. the NDK
+      #  sysroot). So we install libatomic.a in BOTH:
+      #    - Termux sysroot  (pkg-config lookup / -L convenience)
+      #    - NDK sysroot     (default linker search for the link test)
+      #
+      #  Three-tier fallback:
+      #    1. Download the Termux clang .deb (it bundles libatomic.a).
+      #    2. Reuse libclang_rt.builtins-aarch64-android.a from the NDK
+      #       (it contains the same atomic symbols, just a different name).
+      #    3. Create an empty stub — clang lowers aarch64 atomics to
+      #       inline ldxr/stxr builtins, so an empty archive is enough
+      #       for find_library to succeed without affecting codegen.
       # ------------------------------------------------------------------
-      - name: Provide libatomic to Termux sysroot
+      - name: Provide libatomic to Termux + NDK sysroots
         run: |
           set -euo pipefail
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          LIBDIR=/data/data/com.termux/files/usr/lib
 
-          REAL=$(find "$ANDROID_NDK_HOME" -name 'libatomic.a' -print -quit || true)
-          if [ -n "$REAL" ]; then
-            sudo cp "$REAL" "$LIBDIR/libatomic.a"
-            echo "Using NDK libatomic: $REAL"
-          else
-            echo 'int __libatomic_stub;' > /tmp/atomic_stub.c
-            "$NDK_BIN/aarch64-linux-android29-clang" -c /tmp/atomic_stub.c -o /tmp/atomic_stub.o
-            "$NDK_BIN/llvm-ar" rcs /tmp/libatomic.a /tmp/atomic_stub.o
-            sudo cp /tmp/libatomic.a "$LIBDIR/libatomic.a"
-            echo "Installed empty libatomic.a stub into $LIBDIR"
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          NDK_SYSROOT_LIB="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
+          TERMUX_LIB=/data/data/com.termux/files/usr/lib
+
+          sudo mkdir -p "$NDK_SYSROOT_LIB" "$TERMUX_LIB"
+
+          ATOMIC_SRC=""
+
+          # --- Tier 1: Termux clang .deb ---
+          cd /tmp
+          CLANG_URL="https://packages.termux.dev/apt/termux-main/pool/main/c/clang/clang_21.1.8-3_aarch64.deb"
+          if wget -q "$CLANG_URL" -O clang.deb; then
+            mkdir -p /tmp/clang_extract
+            dpkg-deb -x clang.deb /tmp/clang_extract || true
+            FOUND=$(find /tmp/clang_extract -name 'libatomic.a' -print -quit || true)
+            if [ -n "$FOUND" ]; then
+              ATOMIC_SRC="$FOUND"
+              echo "Tier 1: using libatomic.a from Termux clang package"
+            fi
           fi
 
-          ls -lh "$LIBDIR/libatomic.a"
+          # --- Tier 2: NDK's clang_rt.builtins archive (contains atomics) ---
+          if [ -z "$ATOMIC_SRC" ]; then
+            FOUND=$(find "$ANDROID_NDK_HOME" -name 'libclang_rt.builtins-aarch64-android.a' -print -quit || true)
+            if [ -n "$FOUND" ]; then
+              ATOMIC_SRC="$FOUND"
+              echo "Tier 2: using NDK clang_rt.builtins archive as libatomic.a"
+            fi
+          fi
+
+          # --- Tier 3: empty stub ---
+          if [ -z "$ATOMIC_SRC" ]; then
+            echo 'int __libatomic_stub;' > /tmp/atomic_stub.c
+            "$NDK_BIN/aarch64-linux-android29-clang" -c /tmp/atomic_stub.c -o /tmp/atomic_stub.o
+            "$NDK_BIN/llvm-ar" rcs /tmp/libatomic_stub.a /tmp/atomic_stub.o
+            ATOMIC_SRC=/tmp/libatomic_stub.a
+            echo "Tier 3: created empty libatomic.a stub"
+          fi
+
+          # Install into both locations under the name libatomic.a
+          sudo cp "$ATOMIC_SRC" "$TERMUX_LIB/libatomic.a"
+          sudo cp "$ATOMIC_SRC" "$NDK_SYSROOT_LIB/libatomic.a"
+          sudo chmod 644 "$TERMUX_LIB/libatomic.a" "$NDK_SYSROOT_LIB/libatomic.a"
+
+          echo "=== libatomic.a installed ==="
+          ls -lh "$TERMUX_LIB/libatomic.a"
+          ls -lh "$NDK_SYSROOT_LIB/libatomic.a"
+
+          # Sanity: can the cross compiler actually resolve -latomic now?
+          echo 'int main(void){return 0;}' > /tmp/atomictest.c
+          if "$NDK_BIN/aarch64-linux-android29-clang" /tmp/atomictest.c -latomic -o /tmp/atomictest; then
+            echo "OK: -latomic link test passes"
+          else
+            echo "WARN: -latomic link test still failing"
+          fi
 
       # ------------------------------------------------------------------
       # 6. pkg-config wrapper: turn Termux -I into -idirafter
-      #    (keeps NDK headers first, avoids bionic/NDK header clashes)
       # ------------------------------------------------------------------
       - name: Setup pkg-config wrapper
         run: |
@@ -140,7 +186,7 @@ jobs:
           git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
       # ------------------------------------------------------------------
-      # 8. Strip libudev (Termux doesn't ship it)
+      # 8. Strip libudev
       # ------------------------------------------------------------------
       - name: Strip libudev from Mesa build files
         run: |
@@ -215,7 +261,7 @@ jobs:
           EOF
 
       # ------------------------------------------------------------------
-      # 11. Configure PanVK — dev's native recipe, adapted for cross
+      # 11. Configure
       # ------------------------------------------------------------------
       - name: Configure Mesa build for PanVK
         run: |
@@ -241,7 +287,7 @@ jobs:
             -Dcpp_link_args=-landroid-shmem
 
       # ------------------------------------------------------------------
-      # 12. Build ONLY the PanVK shared library
+      # 12. Build only the PanVK library
       # ------------------------------------------------------------------
       - name: Build PanVK shared library
         run: |
@@ -265,7 +311,7 @@ jobs:
           path: panvk-aarch64.tar.xz
 
       # ------------------------------------------------------------------
-      # 14. Release on tags
+      # 14. Release
       # ------------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
