@@ -191,8 +191,6 @@ jobs:
             -Dlibunwind=disabled \
             -Dvalgrind=disabled \
             -Dperfetto=false \
-            -Dgallium-rusticl=false \
-            -Dgallium-clover=false \
             -Dmicrosoft-clc=disabled \
             -Dmesa-clc=auto \
             -Dprefix=/data/data/com.termux/files/usr \
