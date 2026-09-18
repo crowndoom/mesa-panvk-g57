@@ -1,15 +1,10 @@
-name: cross PanVK for Termux (aarch64) — cross-compiled
+name: Build PanVK for Termux (aarch64) — cross-compiled
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      mesa_version:
-        description: 'Mesa version / branch'
-        required: true
-        default: 'main'
 
 permissions:
   contents: write
@@ -26,14 +21,14 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y ninja-build pkg-config python3-mako python3-pip \
-            glslang-tools flex bison curl ca-certificates patch
-          pip install --user meson==1.4.0
+            glslang-tools flex bison curl ca-certificates patch unzip wget
+          pip install --user meson==1.4.0 mako pyyaml packaging
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       # ------------------------------------------------------------------
       # 2. Android NDK (native cross-compiler)
       # ------------------------------------------------------------------
-      - name: Download and setup Android NDK (manual)
+      - name: Download and setup Android NDK
         run: |
           NDK_VERSION="r29"
           NDK_ZIP="android-ndk-${NDK_VERSION}-linux.zip"
@@ -43,7 +38,7 @@ jobs:
           chmod +x /opt/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/*
 
       # ------------------------------------------------------------------
-      # 3. Termux sysroot (headers + libs for aarch64-linux-android)
+      # 3. Termux sysroot
       # ------------------------------------------------------------------
       - name: Setup Termux sysroot
         run: |
@@ -65,25 +60,18 @@ jobs:
           fi
 
       # ------------------------------------------------------------------
-      # 4. Extra Termux packages PanVK needs (libclc, SPIRV tools, etc.)
-      #    These are pulled from the Termux APT pool and unpacked into
-      #    the sysroot — the same technique the Turnip workflow uses.
+      # 4. Extra Termux packages PanVK needs
       # ------------------------------------------------------------------
       - name: Install PanVK-specific packages into Termux sysroot
         run: |
           mkdir -p /tmp/panvk-debs && cd /tmp/panvk-debs
 
-          # Base X11 / DRM / SHM stack
-          wget -q https://packages.termux.dev/apt/termux-main/pool/main/libd/libdrm/libdrm_2.4.134_aarch64.deb || true
-          wget -q https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.6_aarch64.deb || true
-
-          # SPIRV / glslang / libclc — required by Mesa's PanVK build
+          # Required by Mesa's PanVK configure / link
           wget -q https://packages.termux.dev/apt/termux-main/pool/main/s/spirv-tools/spirv-tools_1.4.350.0_aarch64.deb || true
           wget -q https://packages.termux.dev/apt/termux-main/pool/main/s/spirv-llvm-translator/spirv-llvm-translator_21.1.7_aarch64.deb || true
           wget -q https://packages.termux.dev/apt/termux-main/pool/main/libc/libclc/libclc_21.1.3-1_all.deb || true
-
-          # X11 bits
-          wget -q https://packages.termux.dev/apt/termux-x11/pool/main/libx/libxkbcommon/libxkbcommon_1.13.1_aarch64.deb || true
+          wget -q https://packages.termux.dev/apt/termux-main/pool/main/libd/libdrm/libdrm_2.4.134_aarch64.deb || true
+          wget -q https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.6_aarch64.deb || true
           wget -q https://packages.termux.dev/apt/termux-main/pool/main/libx/libxcb/libxcb_1.17.0-1_aarch64.deb || true
 
           for deb in *.deb; do
@@ -91,9 +79,9 @@ jobs:
           done
 
           sudo cp -r /tmp/panvk-debs/extracted/data/data/com.termux/files/usr/* \
-                     /data/data/com.termux/files/usr/
-          sudo chmod -R 755 /data/data/com.termux/files/usr/lib
-          sudo chmod -R 755 /data/data/com.termux/files/usr/include
+                     /data/data/com.termux/files/usr/ || true
+          sudo chmod -R 755 /data/data/com.termux/files/usr/lib || true
+          sudo chmod -R 755 /data/data/com.termux/files/usr/include || true
 
       # ------------------------------------------------------------------
       # 5. pkg-config wrapper (idirafter trick)
@@ -116,7 +104,7 @@ jobs:
           git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
       # ------------------------------------------------------------------
-      # 7. Strip libudev (Mesa tries to link it, Termux doesn't ship it)
+      # 7. Strip libudev
       # ------------------------------------------------------------------
       - name: Strip libudev from Mesa build files
         run: |
@@ -125,7 +113,7 @@ jobs:
           sed -i "s/has_header('libudev.h')/false/g" meson.build
 
       # ------------------------------------------------------------------
-      # 8. Mock libudev.h + Bionic pthread stubs (same as Turnip)
+      # 8. Mock libudev.h + Bionic pthread stubs
       # ------------------------------------------------------------------
       - name: Inject Mock Libudev Headers for Termux Compatibility
         run: |
@@ -167,7 +155,7 @@ jobs:
           sudo chmod 644 /data/data/com.termux/files/usr/include/libudev.h
 
       # ------------------------------------------------------------------
-      # 9. Meson cross file (native x86_64 -> aarch64 Termux)
+      # 9. Meson cross file
       # ------------------------------------------------------------------
       - name: Create Meson cross file
         run: |
@@ -191,40 +179,41 @@ jobs:
           EOF
 
       # ------------------------------------------------------------------
-      # 10. Configure PanVK
+      # 10. Configure PanVK — exact flags from the developer's recipe
       # ------------------------------------------------------------------
       - name: Configure Mesa build for PanVK
         run: |
           meson setup build ~/mesa-panvk \
             --cross-file ~/cross_file.txt \
+            -Dbuildtype=debugoptimized \
             -Dvulkan-drivers=panfrost \
-            -Dgallium-drivers=panfrost \
+            -Dgallium-drivers= \
             -Dpanfrost-kmds=kbase,panthor \
             -Dpanvk-use-kbase=true \
+            -Dplatforms=x11 \
+            -Dglx=disabled \
+            -Degl=disabled \
+            -Dopengl=false \
+            -Dgles1=disabled \
+            -Dgles2=disabled \
+            -Dbuild-tests=false \
+            -Dlibunwind=disabled \
+            -Dvalgrind=disabled \
+            -Dperfetto=false \
             -Dllvm=disabled \
             -Dgallium-rusticl=false \
             -Dgallium-clover=false \
             -Dmicrosoft-clc=disabled \
-            -Dplatforms=x11 \
-            -Dglx=disabled \
-            -Dgbm=disabled \
-            -Dopengl=false \
-            -Degl=disabled \
-            -Dgles1=disabled \
-            -Dgles2=disabled \
-            -Dxmlconfig=disabled \
-            -Dvalgrind=disabled \
-            -Dandroid-libbacktrace=disabled \
-            -Dbuildtype=release \
-            -Dstrip=true \
-            -Dc_link_args="-landroid-shmem" \
-            -Dcpp_link_args="-landroid-shmem"
+            -Dprefix=/data/data/com.termux/files/usr \
+            -Dc_link_args=-landroid-shmem \
+            -Dcpp_link_args=-landroid-shmem
 
       # ------------------------------------------------------------------
-      # 11. Build PanVK (native speed, no QEMU)
+      # 11. Build ONLY the PanVK .so target — same as the developer
       # ------------------------------------------------------------------
-      - name: Build PanVK
-        run: ninja -C build
+      - name: Build PanVK shared library
+        run: |
+          ninja -C build -j$(nproc) src/panfrost/vulkan/libvulkan_panfrost.so
 
       # ------------------------------------------------------------------
       # 12. Package
@@ -234,8 +223,10 @@ jobs:
           mkdir -p panvk_out/lib
           mkdir -p panvk_out/share/vulkan/icd.d
 
-          find build -name "libvulkan_panfrost*.so" -exec cp {} panvk_out/lib/ \;
-          find build -name "panfrost_icd*.json" -exec cp {} panvk_out/share/vulkan/icd.d/ \;
+          cp build/src/panfrost/vulkan/libvulkan_panfrost.so panvk_out/lib/
+
+          # ICD JSON: pick whatever the build generated
+          find build -name "panfrost_icd*.json" -exec cp {} panvk_out/share/vulkan/icd.d/ \; || true
 
           tar -cJf panvk-aarch64.tar.xz -C panvk_out .
           ls -lh panvk-aarch64.tar.xz
@@ -247,14 +238,13 @@ jobs:
           path: panvk-aarch64.tar.xz
 
       # ------------------------------------------------------------------
-      # 13. Release (only on tags)
+      # 13. Release on tags
       # ------------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            panvk-aarch64.tar.xz
+          files: panvk-aarch64.tar.xz
           generate_release_notes: true
           prerelease: true
           tag_name: ${{ github.ref_name }}
