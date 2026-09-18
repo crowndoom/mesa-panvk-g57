@@ -202,8 +202,9 @@ jobs:
             -Dpanfrost-kmds=kbase,panthor \
             -Dpanvk-use-kbase=true \
             -Dllvm=disabled \
-            -Dmesa-clc=disabled \
-            -Dprecomp-compiler=disabled \
+            -Dgallium-rusticl=false \
+            -Dgallium-clover=false \
+            -Dmicrosoft-clc=disabled \
             -Dplatforms=x11 \
             -Dglx=disabled \
             -Dgbm=disabled \
