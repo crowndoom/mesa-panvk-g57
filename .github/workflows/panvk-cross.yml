@@ -80,22 +80,55 @@ jobs:
           SCRIPT
           sudo chmod +x /usr/local/bin/termux-pkg-config
 
+      - name: Create cross compiler wrappers
+        run: |
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          sudo tee /usr/local/bin/android-cross-cc > /dev/null << EOF
+          #!/bin/bash
+          # Meson sanity check produces a dynamic Bionic ELF that qemu-user-static
+          # cannot load (no /system/bin/linker64 on the host). Force -static for
+          # invocations that look like the sanity check.
+          for arg in "\$@"; do
+            case "\$arg" in
+              *sanitycheck*)
+                exec "${NDK_BIN}/aarch64-linux-android29-clang" -static "\$@"
+                ;;
+            esac
+          done
+          exec "${NDK_BIN}/aarch64-linux-android29-clang" "\$@"
+          EOF
+          sudo tee /usr/local/bin/android-cross-cxx > /dev/null << EOF
+          #!/bin/bash
+          for arg in "\$@"; do
+            case "\$arg" in
+              *sanitycheck*)
+                exec "${NDK_BIN}/aarch64-linux-android29-clang++" -static "\$@"
+                ;;
+            esac
+          done
+          exec "${NDK_BIN}/aarch64-linux-android29-clang++" "\$@"
+          EOF
+          sudo chmod 755 /usr/local/bin/android-cross-cc /usr/local/bin/android-cross-cxx
+          printf 'int main(void){return 0;}\n' > /tmp/sc.c
+          /usr/local/bin/android-cross-cc /tmp/sc.c -o /tmp/sc
+          file /tmp/sc
+          qemu-aarch64-static /tmp/sc && echo "static sanity binary runs OK"
+
       - name: Clone Mesa PanVK fork
         run: git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
       - name: Strip libudev from Mesa
         run: |
           cd ~/mesa-panvk
-          sed -i "s/dependency('libudev',/dependency('libudev', required : false, disabler : true, /g" meson.build
+          # Replace the whole dependency('libudev', ...) call with a clean one,
+          # so no duplicate required:/version: keywords survive.
+          sed -i -E "s/dependency\('libudev'[^)]*\)/dependency('libudev', required : false, disabler : true)/g" meson.build
           sed -i "s/has_header('libudev.h')/false/g" meson.build
+          echo "=== libudev references ==="
+          grep -n "libudev" meson.build || true
 
       # ------------------------------------------------------------------
       # Fix #1 — vtn_bindgen2 (src/compiler/spirv/meson.build)
-      #
-      # In a cross build vtn_bindgen2 is native, but its dependencies list
-      # pulls in idep_vtn (a host target). Meson refuses to mix. The tool
-      # only reads generated headers, so list them as sources and drop
-      # idep_vtn. Uses the exact sed from the Termux package recipe.
       # ------------------------------------------------------------------
       - name: Fix vtn_bindgen2 for cross build
         run: |
@@ -109,10 +142,6 @@ jobs:
 
       # ------------------------------------------------------------------
       # Fix #2 — remove with_panfrost_vk from with_driver_using_cl
-      #
-      # The fork wrongly lists PanVK among CLC-using drivers. Removing it
-      # makes with_clc=false for a PanVK-only build, so src/compiler/clc
-      # is never entered and no LLVM host tool is required.
       # ------------------------------------------------------------------
       - name: Drop PanVK from CLC drivers list
         run: |
@@ -124,34 +153,31 @@ jobs:
           sed -n '/with_driver_using_cl = \[/,/\].contains(true)/p' meson.build
 
       # ------------------------------------------------------------------
-      # Fix #3 — guard subdir('cl') in src/poly/meson.build
-      #
-      # With with_clc=false, prog_mesa_clc is undefined, but
-      # src/poly/meson.build still enters subdir('cl') and fails. Wrap
-      # it in `if with_clc` so it is skipped.
+      # Fix #3 — guard src/poly subdirs when CLC is off
       # ------------------------------------------------------------------
-      - name: Guard src/poly/cl when CLC is off
+      - name: Guard src/poly CLC subdir when CLC is off
         run: |
           cd ~/mesa-panvk
-          sed -i "s|^subdir('cl')|if with_clc\n  subdir('cl')\nendif|" src/poly/meson.build
-          if grep -q "^if with_clc" src/poly/meson.build; then
-            echo "OK: subdir('cl') guarded"
-          else
-            echo "WARN: subdir('cl') not found — check manually"
-          fi
+          echo "=== src/poly/meson.build BEFORE ==="
           cat src/poly/meson.build
+          sed -i "s|^subdir('clc')|if with_clc\n  subdir('clc')\nendif|" src/poly/meson.build
+          sed -i "s|^subdir('cl')|if with_clc\n  subdir('cl')\nendif|"  src/poly/meson.build
+          echo "=== src/poly/meson.build AFTER ==="
+          cat src/poly/meson.build
+          if grep -q "^if with_clc" src/poly/meson.build; then
+            echo "OK: subdir guarded"
+          else
+            echo "WARN: no subdir('cl'/'clc') found — the file may have moved"
+          fi
 
       - name: Create Meson cross file
         run: |
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          API=29
-          TARGET="aarch64-linux-android"
           cat > ~/cross_file.txt <<EOF
           [binaries]
-          c       = '${NDK_BIN}/${TARGET}${API}-clang'
-          cpp     = '${NDK_BIN}/${TARGET}${API}-clang++'
-          ar      = '${NDK_BIN}/llvm-ar'
-          strip   = '${NDK_BIN}/llvm-strip'
+          c       = '/usr/local/bin/android-cross-cc'
+          cpp     = '/usr/local/bin/android-cross-cxx'
+          ar      = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
+          strip   = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
           pkg-config = 'termux-pkg-config'
           exe_wrapper = 'qemu-aarch64-static'
 
@@ -191,8 +217,6 @@ jobs:
             -Dlibunwind=disabled \
             -Dvalgrind=disabled \
             -Dperfetto=false \
-            -Dmicrosoft-clc=disabled \
-            -Dmesa-clc=auto \
             -Dprefix=/data/data/com.termux/files/usr \
             -Dc_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem" \
             -Dcpp_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem"
