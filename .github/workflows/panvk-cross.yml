@@ -1,4 +1,4 @@
-name: Build PanVK for Termux (aarch64) — cross-compiled
+name: cross PanVK for Termux (aarch64) — cross-compiled
 
 on:
   push:
@@ -202,6 +202,8 @@ jobs:
             -Dpanfrost-kmds=kbase,panthor \
             -Dpanvk-use-kbase=true \
             -Dllvm=disabled \
+            -Dmesa-clc=disabled \
+            -Dprecomp-compiler=disabled \
             -Dplatforms=x11 \
             -Dglx=disabled \
             -Dgbm=disabled \
