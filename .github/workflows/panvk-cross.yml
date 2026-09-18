@@ -121,42 +121,56 @@ jobs:
           sed -i "s/has_header('libudev.h')/false/g" meson.build
 
       # ------------------------------------------------------------------
-      # Patch CLC / LLVM hard requirement
+      # Neutralize CLC/LLVM coupling in meson.build
       #
-      # Mesa evaluates dependency('llvm') against the BUILD machine
-      # (x86_64 ubuntu runner, has llvm-config), so it auto-enables CLC.
-      # But the HOST machine (aarch64 Termux) has no LLVM, so with_llvm
-      # is false, and meson.build:950 then errors out.
+      # meson.build has:
+      #   with_driver_using_cl = [ ..., with_panfrost_vk, ... ].contains(true)
+      #   with_clc = ... or with_driver_using_cl
+      #   with_llvm = with_llvm.enable_if(with_clc,
+      #                error_message : 'CLC requires LLVM')
       #
-      # PanVK does not need CLC — CLC only exists for OpenCL — so:
-      #   (1) downgrade that hard error to a warning, and
-      #   (2) force with_clc=false so the src/clc subdir is not built.
+      # So -Dvulkan-drivers=panfrost forces with_clc=true, which then
+      # *requires* LLVM. In a cross build there is no aarch64 LLVM in the
+      # sysroot, so the LLVM feature is auto-disabled and the hard error
+      # fires at meson.build:950.
+      #
+      # PanVK (kbase/JM) does not need CLC. Forcing with_clc=false before
+      # that check drops the LLVM requirement and everything downstream
+      # that only runs `if with_clc:` (dep_clc, LLVMSPIRVLib, clang,
+      # SPIRV-Tools, extra llvm_modules) is skipped cleanly.
       # ------------------------------------------------------------------
-      - name: Bypass LLVM/CLC hard requirement in meson.build
+      - name: Neutralize CLC/LLVM coupling in meson.build
         run: |
           cd ~/mesa-panvk
+          python3 - <<'PY'
+          import pathlib, sys
+          p = pathlib.Path("meson.build")
+          s = p.read_text()
 
-          echo "=== meson.build:935-965 BEFORE ==="
-          sed -n '935,965p' meson.build
+          old = (
+              "with_llvm = with_llvm \\\n"
+              "  .enable_if(with_clc, error_message : 'CLC requires LLVM')"
+          )
+          new = (
+              "# --- Termux cross build: PanVK JM does not need CLC, and\n"
+              "# --- there is no aarch64 LLVM in the sysroot. Force CLC\n"
+              "# --- off *before* the LLVM coupling check.\n"
+              "with_clc = false\n"
+              "with_llvm = with_llvm"
+          )
 
-          # (1) downgrade the error to a warning
-          sed -i "s/error('Feature llvm cannot be disabled: CLC requires LLVM')/warning('BYPASS(Termux): CLC without LLVM - check skipped')/" meson.build
+          if old not in s:
+              print("ERROR: expected pattern not found in meson.build.")
+              print("Expected this exact block:")
+              print(old)
+              sys.exit(1)
 
-          # (2) force with_clc = false wherever it is set to true
-          sed -i "s/^with_clc = true$/with_clc = false  # patched for Termux cross build/" meson.build
+          p.write_text(s.replace(old, new))
+          print("OK: patched with_clc = false")
+          PY
 
-          # (3) belt-and-suspenders: do not descend into CLC source dirs
-          sed -i "s|^subdir('src/clc')|# subdir('src/clc')  # patched for Termux|"        meson.build || true
-          sed -i "s|^subdir('src/microsoft/clc')|# subdir('src/microsoft/clc')  # patched|" meson.build || true
-
-          echo "=== meson.build:935-965 AFTER ==="
-          sed -n '935,965p' meson.build
-
-          echo "=== every with_clc assignment ==="
-          grep -n "with_clc" meson.build | head -20
-
-          echo "=== every CLC-related subdir line ==="
-          grep -n "subdir('src/clc')\|subdir('src/microsoft/clc')" meson.build || echo "(none found — subdirs named differently; harmless)"
+          echo "=== every with_clc assignment after patch ==="
+          grep -n "^with_clc" meson.build
 
       - name: Inject Mock Libudev Headers
         run: |
