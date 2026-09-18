@@ -1,4 +1,4 @@
-name: Build PanVK for Termux (aarch64) — cross-compiled
+name: cross PanVK for Termux (aarch64) — cross-compiled
 
 on:
   push:
