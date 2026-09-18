@@ -48,7 +48,7 @@ jobs:
                 bison flex cmake \
                 glslang shaderc vulkan-headers vulkan-loader-generic \
                 libandroid-shmem libdrm libxcb xorgproto \
-                libx11 libxshmfence zlib zstd expat
+                libx11 libxshmfence zlib zstd libexpat
 
               pip install --break-system-packages mako pyyaml packaging
 
