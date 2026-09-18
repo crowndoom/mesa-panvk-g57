@@ -1,4 +1,4 @@
-name: cross PanVK for Termux (aarch64) — cross-compiled
+name: Cross PANVK
 
 on:
   push:
@@ -73,12 +73,12 @@ jobs:
           mkdir -p /tmp/panvk-debs && cd /tmp/panvk-debs
 
           base="https://packages.termux.dev/apt/termux-main/pool/main"
-          wget -q "$base/libd/libdrm/libdrm_2.4.134_aarch64.deb"                       || true
-          wget -q "$base/liba/libandroid-shmem/libandroid-shmem_0.6_aarch64.deb"       || true
-          wget -q "$base/libc/libclc/libclc_21.1.3-1_all.deb"                          || true
-          wget -q "$base/s/spirv-tools/spirv-tools_1.4.350.0_aarch64.deb"              || true
-          wget -q "$base/s/spirv-llvm-translator/spirv-llvm-translator_21.1.7_aarch64.deb" || true
-          wget -q "$base/libx/libxcb/libxcb_1.17.0-1_aarch64.deb"                      || true
+          wget -q "$base/libd/libdrm/libdrm_2.4.134_aarch64.deb"                            || true
+          wget -q "$base/liba/libandroid-shmem/libandroid-shmem_0.6_aarch64.deb"            || true
+          wget -q "$base/libc/libclc/libclc_21.1.3-1_all.deb"                               || true
+          wget -q "$base/s/spirv-tools/spirv-tools_1.4.350.0_aarch64.deb"                   || true
+          wget -q "$base/s/spirv-llvm-translator/spirv-llvm-translator_21.1.7_aarch64.deb"  || true
+          wget -q "$base/libx/libxcb/libxcb_1.17.0-1_aarch64.deb"                           || true
 
           for deb in *.deb; do
             [ -f "$deb" ] && dpkg-deb -x "$deb" /tmp/panvk-debs/extracted/
@@ -90,7 +90,36 @@ jobs:
           sudo chmod -R 755 /data/data/com.termux/files/usr/include || true
 
       # ------------------------------------------------------------------
-      # 5. pkg-config wrapper: turn Termux -I into -idirafter
+      # 5. Provide libatomic to the Termux sysroot
+      #    Mesa's meson.build:1541 does cc.find_library('atomic') with a hard
+      #    requirement. The NDK ships neither a real libatomic.a nor a linker
+      #    stub, but clang already lowers aarch64 atomics to inline
+      #    ldxr/stxr builtins (the -latomic link test returned NO, proving
+      #    the library is not actually needed at codegen time). An empty
+      #    archive satisfies find_library without altering codegen.
+      # ------------------------------------------------------------------
+      - name: Provide libatomic to Termux sysroot
+        run: |
+          set -euo pipefail
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          LIBDIR=/data/data/com.termux/files/usr/lib
+
+          REAL=$(find "$ANDROID_NDK_HOME" -name 'libatomic.a' -print -quit || true)
+          if [ -n "$REAL" ]; then
+            sudo cp "$REAL" "$LIBDIR/libatomic.a"
+            echo "Using NDK libatomic: $REAL"
+          else
+            echo 'int __libatomic_stub;' > /tmp/atomic_stub.c
+            "$NDK_BIN/aarch64-linux-android29-clang" -c /tmp/atomic_stub.c -o /tmp/atomic_stub.o
+            "$NDK_BIN/llvm-ar" rcs /tmp/libatomic.a /tmp/atomic_stub.o
+            sudo cp /tmp/libatomic.a "$LIBDIR/libatomic.a"
+            echo "Installed empty libatomic.a stub into $LIBDIR"
+          fi
+
+          ls -lh "$LIBDIR/libatomic.a"
+
+      # ------------------------------------------------------------------
+      # 6. pkg-config wrapper: turn Termux -I into -idirafter
       #    (keeps NDK headers first, avoids bionic/NDK header clashes)
       # ------------------------------------------------------------------
       - name: Setup pkg-config wrapper
@@ -104,14 +133,14 @@ jobs:
           sudo chmod +x /usr/local/bin/termux-pkg-config
 
       # ------------------------------------------------------------------
-      # 6. Clone the PanVK fork
+      # 7. Clone the PanVK fork
       # ------------------------------------------------------------------
       - name: Clone Mesa PanVK fork
         run: |
           git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
       # ------------------------------------------------------------------
-      # 7. Strip libudev (Termux doesn't ship it)
+      # 8. Strip libudev (Termux doesn't ship it)
       # ------------------------------------------------------------------
       - name: Strip libudev from Mesa build files
         run: |
@@ -120,7 +149,7 @@ jobs:
           sed -i "s/has_header('libudev.h')/false/g" meson.build
 
       # ------------------------------------------------------------------
-      # 8. Mock libudev.h + Bionic pthread stubs
+      # 9. Mock libudev.h + Bionic pthread stubs
       # ------------------------------------------------------------------
       - name: Inject Mock Libudev Headers
         run: |
@@ -162,7 +191,7 @@ jobs:
           sudo chmod 644 /data/data/com.termux/files/usr/include/libudev.h
 
       # ------------------------------------------------------------------
-      # 9. Meson cross file
+      # 10. Meson cross file
       # ------------------------------------------------------------------
       - name: Create Meson cross file
         run: |
@@ -186,7 +215,7 @@ jobs:
           EOF
 
       # ------------------------------------------------------------------
-      # 10. Configure PanVK — dev's native recipe, adapted for cross
+      # 11. Configure PanVK — dev's native recipe, adapted for cross
       # ------------------------------------------------------------------
       - name: Configure Mesa build for PanVK
         run: |
@@ -212,14 +241,14 @@ jobs:
             -Dcpp_link_args=-landroid-shmem
 
       # ------------------------------------------------------------------
-      # 11. Build ONLY the PanVK shared library
+      # 12. Build ONLY the PanVK shared library
       # ------------------------------------------------------------------
       - name: Build PanVK shared library
         run: |
           ninja -C build -j$(nproc) src/panfrost/vulkan/libvulkan_panfrost.so
 
       # ------------------------------------------------------------------
-      # 12. Package
+      # 13. Package
       # ------------------------------------------------------------------
       - name: Package PanVK artifacts
         run: |
@@ -235,6 +264,9 @@ jobs:
           name: panvk-aarch64
           path: panvk-aarch64.tar.xz
 
+      # ------------------------------------------------------------------
+      # 14. Release on tags
+      # ------------------------------------------------------------------
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
