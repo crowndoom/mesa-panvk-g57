@@ -12,14 +12,15 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Install host build tools
         run: |
           sudo apt update
           sudo apt install -y ninja-build pkg-config python3-mako python3-pip \
-            glslang-tools flex bison curl ca-certificates patch unzip wget
+            glslang-tools flex bison curl ca-certificates patch unzip wget \
+            qemu-user-static
           pip install --user meson mako pyyaml packaging ply
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
@@ -75,7 +76,6 @@ jobs:
           TERMUX_LIB=/data/data/com.termux/files/usr/lib
           NDK_SYSROOT_LIB="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
           sudo mkdir -p "$TERMUX_LIB" "$NDK_SYSROOT_LIB"
-
           ATOMIC_SRC=""
           ATOMIC_SRC=$(find "$ANDROID_NDK_HOME" -name 'libatomic.a' -print -quit || true)
           if [ -z "$ATOMIC_SRC" ]; then
@@ -121,23 +121,54 @@ jobs:
           sed -i "s/has_header('libudev.h')/false/g" meson.build
 
       # ------------------------------------------------------------------
-      # Neutralize CLC/LLVM coupling in meson.build
+      # Patch src/compiler/spirv/meson.build
       #
-      # meson.build has:
-      #   with_driver_using_cl = [ ..., with_panfrost_vk, ... ].contains(true)
-      #   with_clc = ... or with_driver_using_cl
-      #   with_llvm = with_llvm.enable_if(with_clc,
-      #                error_message : 'CLC requires LLVM')
+      # Meson error (previous run):
+      #   src/compiler/spirv/meson.build:83:23: ERROR: Tried to mix a host
+      #   machine library ("vtn") with a build machine target "vtn_bindgen2"
+      #   This is not possible in a cross build.
       #
-      # So -Dvulkan-drivers=panfrost forces with_clc=true, which then
-      # *requires* LLVM. In a cross build there is no aarch64 LLVM in the
-      # sysroot, so the LLVM feature is auto-disabled and the hard error
-      # fires at meson.build:950.
+      # Cause: the fork declares vtn_bindgen2 as native : true (i.e. a
+      # build-machine target) AND links it against libvtn (host-machine
+      # library). Meson forbids that. Upstream Mesa's vtn_bindgen2 doesn't
+      # link libvtn, so upstream never hits this.
       #
-      # PanVK (kbase/JM) does not need CLC. Forcing with_clc=false before
-      # that check drops the LLVM requirement and everything downstream
-      # that only runs `if with_clc:` (dep_clc, LLVMSPIRVLib, clang,
-      # SPIRV-Tools, extra llvm_modules) is skipped cleanly.
+      # Fix: turn vtn_bindgen2 into a HOST-machine executable (drop
+      # native : true). It will be built with the cross compiler (aarch64)
+      # and linked against libvtn (also aarch64), which is legal. Meson
+      # then runs it during the build via exe_wrapper (qemu-aarch64-static),
+      # declared in the cross file below. Same machine on both sides, no
+      # mixing, and the generator still produces the same header.
+      # ------------------------------------------------------------------
+      - name: Patch vtn_bindgen2 for cross build
+        run: |
+          cd ~/mesa-panvk
+          echo "=== src/compiler/spirv/meson.build:70-100 BEFORE ==="
+          sed -n '70,100p' src/compiler/spirv/meson.build
+
+          python3 - <<'PY'
+          import pathlib, re, sys
+          p = pathlib.Path("src/compiler/spirv/meson.build")
+          s = p.read_text()
+          m = re.search(r"vtn_bindgen2\s*=\s*executable\(.*?\n\)", s, flags=re.DOTALL)
+          if not m:
+              print("ERROR: vtn_bindgen2 executable definition not found")
+              sys.exit(1)
+          block = m.group(0)
+          new_block = re.sub(r"native\s*:\s*true", "native : false", block)
+          if new_block == block:
+              print("WARN: no `native : true` inside vtn_bindgen2 block")
+          else:
+              s = s.replace(block, new_block)
+              p.write_text(s)
+              print("OK: vtn_bindgen2 -> native : false")
+          PY
+
+          echo "=== src/compiler/spirv/meson.build:70-100 AFTER ==="
+          sed -n '70,100p' src/compiler/spirv/meson.build
+
+      # ------------------------------------------------------------------
+      # Neutralize CLC/LLVM coupling (see previous run's fix)
       # ------------------------------------------------------------------
       - name: Neutralize CLC/LLVM coupling in meson.build
         run: |
@@ -146,7 +177,6 @@ jobs:
           import pathlib, sys
           p = pathlib.Path("meson.build")
           s = p.read_text()
-
           old = (
               "with_llvm = with_llvm \\\n"
               "  .enable_if(with_clc, error_message : 'CLC requires LLVM')"
@@ -158,18 +188,13 @@ jobs:
               "with_clc = false\n"
               "with_llvm = with_llvm"
           )
-
           if old not in s:
-              print("ERROR: expected pattern not found in meson.build.")
-              print("Expected this exact block:")
+              print("ERROR: expected pattern not found")
               print(old)
               sys.exit(1)
-
           p.write_text(s.replace(old, new))
-          print("OK: patched with_clc = false")
+          print("OK: with_clc = false")
           PY
-
-          echo "=== every with_clc assignment after patch ==="
           grep -n "^with_clc" meson.build
 
       - name: Inject Mock Libudev Headers
@@ -205,29 +230,47 @@ jobs:
           EOF
           sudo chmod 644 /data/data/com.termux/files/usr/include/libudev.h
 
+      # ------------------------------------------------------------------
+      # Meson cross file — with exe_wrapper
+      #
+      # exe_wrapper tells Meson how to run HOST-machine executables (aarch64)
+      # during the build. When Meson needs to run vtn_bindgen2 (which is now
+      # a host-machine target after the patch above), it will call
+      # `qemu-aarch64-static <binary> <args>`.
+      # ------------------------------------------------------------------
       - name: Create Meson cross file
         run: |
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           API=29
           TARGET="aarch64-linux-android"
           cat > ~/cross_file.txt <<EOF
-          [host_machine]
-          system = 'linux'
-          cpu_family = 'aarch64'
-          cpu = 'aarch64'
-          endian = 'little'
-
           [binaries]
           c = '${NDK_BIN}/${TARGET}${API}-clang'
           cpp = '${NDK_BIN}/${TARGET}${API}-clang++'
           ar = '${NDK_BIN}/llvm-ar'
           strip = '${NDK_BIN}/llvm-strip'
           pkg-config = 'termux-pkg-config'
+          exe_wrapper = 'qemu-aarch64-static'
+
+          [properties]
+          needs_exe_wrapper = true
+
+          [host_machine]
+          system = 'linux'
+          cpu_family = 'aarch64'
+          cpu = 'aarch64'
+          endian = 'little'
 
           [built-in options]
           c_link_args = ['-L/data/data/com.termux/files/usr/lib']
           cpp_link_args = ['-L/data/data/com.termux/files/usr/lib']
           EOF
+
+          echo "=== cross file ==="
+          cat ~/cross_file.txt
+
+          echo "=== qemu-aarch64-static presence ==="
+          command -v qemu-aarch64-static
 
       - name: Configure Mesa build for PanVK
         run: |
