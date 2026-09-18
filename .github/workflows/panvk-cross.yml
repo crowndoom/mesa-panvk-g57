@@ -12,7 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Install host build tools
@@ -20,9 +20,10 @@ jobs:
           sudo apt update
           sudo apt install -y ninja-build pkg-config python3-mako python3-pip \
             glslang-tools flex bison curl ca-certificates patch unzip wget \
-            qemu-user-static
+            qemu-user-static file
           pip install --user meson mako pyyaml packaging ply
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          command -v qemu-aarch64-static
 
       - name: Download Android NDK
         run: |
@@ -30,214 +31,116 @@ jobs:
           wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
           unzip -q "android-ndk-${NDK_VERSION}-linux.zip" -d /opt
           echo "ANDROID_NDK_HOME=/opt/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
-          chmod +x /opt/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/*
 
       - name: Setup Termux sysroot
         run: |
-          mkdir termux && cd termux
+          set -euo pipefail
+          mkdir -p termux && cd termux
           wget -q https://github.com/xodiosx/Wine-arm64ce/releases/download/wine-14/termux-rootfs.tar
           tar xf termux-rootfs.tar
           sudo mv data /data
           sudo chown -R $(whoami):$(whoami) /data
-          mkdir -p /data/data/com.termux/files/usr/tmp
           sudo chmod -R a+rX /data/data/com.termux/files/usr
+          mkdir -p /data/data/com.termux/files/usr/tmp
 
-      - name: Provide android_lf.h
-        run: |
-          NDK_HEADER=$(find /opt/android-ndk-r29 -name android_lf.h -print -quit)
-          if [ -n "$NDK_HEADER" ]; then
-            sudo cp "$NDK_HEADER" /data/data/com.termux/files/usr/include/
-          else
-            sudo touch /data/data/com.termux/files/usr/include/android_lf.h
-          fi
-
-      - name: Install PanVK packages into Termux sysroot
-        run: |
-          mkdir -p /tmp/panvk-debs && cd /tmp/panvk-debs
-          base="https://packages.termux.dev/apt/termux-main/pool/main"
-          wget -q "$base/libd/libdrm/libdrm_2.4.134_aarch64.deb"                            || true
-          wget -q "$base/liba/libandroid-shmem/libandroid-shmem_0.6_aarch64.deb"            || true
-          wget -q "$base/libc/libclc/libclc_21.1.3-1_all.deb"                               || true
-          wget -q "$base/s/spirv-tools/spirv-tools_1.4.350.0_aarch64.deb"                   || true
-          wget -q "$base/s/spirv-llvm-translator/spirv-llvm-translator_21.1.7_aarch64.deb"  || true
-          wget -q "$base/libx/libxcb/libxcb_1.17.0-1_aarch64.deb"                           || true
-          for deb in *.deb; do
-            [ -f "$deb" ] && dpkg-deb -x "$deb" /tmp/panvk-debs/extracted/
-          done
-          sudo cp -r /tmp/panvk-debs/extracted/data/data/com.termux/files/usr/* \
-                     /data/data/com.termux/files/usr/ || true
-          sudo chmod -R 755 /data/data/com.termux/files/usr/lib || true
-          sudo chmod -R 755 /data/data/com.termux/files/usr/include || true
-
-      - name: Provide libatomic to Termux + NDK sysroots
+      - name: Install PanVK runtime deps into Termux sysroot
         run: |
           set -euo pipefail
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          TERMUX_LIB=/data/data/com.termux/files/usr/lib
+          cd /tmp
+          rm -rf panvk-debs && mkdir panvk-debs && cd panvk-debs
+          BASE="https://packages.termux.dev/apt/termux-main"
+          for pkg in libdrm libandroid-shmem libclc spirv-tools \
+                     spirv-llvm-translator libxcb xorgproto libx11 libxshmfence \
+                     zlib zstd libexpat; do
+            wget -q -r -l1 -np -nH --cut-dirs=0 \
+              --accept-regex "${pkg}_.*_aarch64\.deb|${pkg}_.*_all\.deb" \
+              "${BASE}/pool/main/${pkg:0:1}/${pkg}/" -P . || true
+          done
+          find . -name '*.deb' -print -exec dpkg-deb -x {} /tmp/panvk-debs/rootfs/ \;
+          sudo cp -rn /tmp/panvk-debs/rootfs/data/data/com.termux/files/usr/. \
+                       /data/data/com.termux/files/usr/ || true
+          sudo chmod -R a+rX /data/data/com.termux/files/usr/lib
+
+      - name: Provide libatomic to NDK sysroot
+        run: |
+          set -euo pipefail
           NDK_SYSROOT_LIB="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
-          sudo mkdir -p "$TERMUX_LIB" "$NDK_SYSROOT_LIB"
-          ATOMIC_SRC=""
-          ATOMIC_SRC=$(find "$ANDROID_NDK_HOME" -name 'libatomic.a' -print -quit || true)
-          if [ -z "$ATOMIC_SRC" ]; then
-            ATOMIC_SRC=$(find "$ANDROID_NDK_HOME" -name 'libclang_rt.builtins-aarch64-android.a' -print -quit || true)
-          fi
-          if [ -z "$ATOMIC_SRC" ]; then
-            cd /tmp
-            URL="https://packages.termux.dev/apt/termux-main/pool/main/c/clang/clang_21.1.8-3_aarch64.deb"
-            if wget -q "$URL" -O clang.deb; then
-              mkdir -p clang_x && dpkg-deb -x clang.deb clang_x || true
-              ATOMIC_SRC=$(find clang_x -name 'libatomic.a' -print -quit || true)
-            fi
-          fi
-          if [ -z "$ATOMIC_SRC" ]; then
-            echo 'int __libatomic_stub;' > /tmp/atomic_stub.c
-            "$NDK_BIN/aarch64-linux-android29-clang" -c /tmp/atomic_stub.c -o /tmp/atomic_stub.o
-            "$NDK_BIN/llvm-ar" rcs /tmp/libatomic_stub.a /tmp/atomic_stub.o
-            ATOMIC_SRC=/tmp/libatomic_stub.a
-          fi
-          echo "libatomic source: $ATOMIC_SRC"
-          sudo cp "$ATOMIC_SRC" "$TERMUX_LIB/libatomic.a"
-          sudo cp "$ATOMIC_SRC" "$NDK_SYSROOT_LIB/libatomic.a"
-          sudo chmod 644 "$TERMUX_LIB/libatomic.a" "$NDK_SYSROOT_LIB/libatomic.a"
+          SRC=$(find "$ANDROID_NDK_HOME" -name 'libclang_rt.builtins-aarch64-android.a' -print -quit)
+          [ -n "$SRC" ] || { echo "no builtins archive found"; exit 1; }
+          sudo cp "$SRC" "$NDK_SYSROOT_LIB/libatomic.a"
+          sudo chmod 644 "$NDK_SYSROOT_LIB/libatomic.a"
 
       - name: Setup pkg-config wrapper
         run: |
           sudo tee /usr/local/bin/termux-pkg-config > /dev/null << 'SCRIPT'
           #!/bin/bash
-          export PKG_CONFIG_PATH=/data/data/com.termux/files/usr/lib/pkgconfig
-          /usr/bin/pkg-config "$@" | \
-            sed 's|-I/data/data/com.termux/files/usr/include|-idirafter /data/data/com.termux/files/usr/include|g'
+          export PKG_CONFIG_LIBDIR=/data/data/com.termux/files/usr/lib/pkgconfig:/data/data/com.termux/files/usr/share/pkgconfig
+          export PKG_CONFIG_SYSROOT_DIR=/data/data/com.termux/files/usr
+          exec /usr/bin/pkg-config "$@"
           SCRIPT
           sudo chmod +x /usr/local/bin/termux-pkg-config
 
       - name: Clone Mesa PanVK fork
-        run: |
-          git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
+        run: git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
-      - name: Strip libudev from Mesa build files
+      - name: Strip libudev from Mesa
         run: |
           cd ~/mesa-panvk
           sed -i "s/dependency('libudev',/dependency('libudev', required : false, disabler : true, /g" meson.build
           sed -i "s/has_header('libudev.h')/false/g" meson.build
 
       # ------------------------------------------------------------------
-      # Patch src/compiler/spirv/meson.build
+      # Fix #1 — vtn_bindgen2 (src/compiler/spirv/meson.build)
       #
-      # Meson error (previous run):
-      #   src/compiler/spirv/meson.build:83:23: ERROR: Tried to mix a host
-      #   machine library ("vtn") with a build machine target "vtn_bindgen2"
-      #   This is not possible in a cross build.
-      #
-      # Cause: the fork declares vtn_bindgen2 as native : true (i.e. a
-      # build-machine target) AND links it against libvtn (host-machine
-      # library). Meson forbids that. Upstream Mesa's vtn_bindgen2 doesn't
-      # link libvtn, so upstream never hits this.
-      #
-      # Fix: turn vtn_bindgen2 into a HOST-machine executable (drop
-      # native : true). It will be built with the cross compiler (aarch64)
-      # and linked against libvtn (also aarch64), which is legal. Meson
-      # then runs it during the build via exe_wrapper (qemu-aarch64-static),
-      # declared in the cross file below. Same machine on both sides, no
-      # mixing, and the generator still produces the same header.
+      # In a cross build vtn_bindgen2 is native, but its dependencies list
+      # pulls in idep_vtn (a host target). Meson refuses to mix. The tool
+      # only reads generated headers, so list them as sources and drop
+      # idep_vtn. Uses the exact sed from the Termux package recipe.
       # ------------------------------------------------------------------
-      - name: Patch vtn_bindgen2 for cross build
+      - name: Fix vtn_bindgen2 for cross build
         run: |
           cd ~/mesa-panvk
-          echo "=== src/compiler/spirv/meson.build:70-100 BEFORE ==="
-          sed -n '70,100p' src/compiler/spirv/meson.build
-
-          python3 - <<'PY'
-          import pathlib, re, sys
-          p = pathlib.Path("src/compiler/spirv/meson.build")
-          s = p.read_text()
-          m = re.search(r"vtn_bindgen2\s*=\s*executable\(.*?\n\)", s, flags=re.DOTALL)
-          if not m:
-              print("ERROR: vtn_bindgen2 executable definition not found")
-              sys.exit(1)
-          block = m.group(0)
-          new_block = re.sub(r"native\s*:\s*true", "native : false", block)
-          if new_block == block:
-              print("WARN: no `native : true` inside vtn_bindgen2 block")
-          else:
-              s = s.replace(block, new_block)
-              p.write_text(s)
-              print("OK: vtn_bindgen2 -> native : false")
-          PY
-
-          echo "=== src/compiler/spirv/meson.build:70-100 AFTER ==="
-          sed -n '70,100p' src/compiler/spirv/meson.build
+          sed -i \
+            -e "s|\['vtn_bindgen2.c'\],|['vtn_bindgen2.c', vtn_generator_ids_h, spirv_info_h],|" \
+            -e "s|dependencies : \[idep_vtn, idep_mesautil, idep_nir\],|dependencies : [],|" \
+            src/compiler/spirv/meson.build
+          echo "=== vtn_bindgen2 block ==="
+          sed -n '/prog_vtn_bindgen2 = executable/,/^   )/p' src/compiler/spirv/meson.build
 
       # ------------------------------------------------------------------
-      # Neutralize CLC/LLVM coupling (see previous run's fix)
+      # Fix #2 — remove with_panfrost_vk from with_driver_using_cl
+      #
+      # The fork wrongly lists PanVK among CLC-using drivers. Removing it
+      # makes with_clc=false for a PanVK-only build, so src/compiler/clc
+      # is never entered and no LLVM host tool is required.
       # ------------------------------------------------------------------
-      - name: Neutralize CLC/LLVM coupling in meson.build
+      - name: Drop PanVK from CLC drivers list
         run: |
           cd ~/mesa-panvk
-          python3 - <<'PY'
-          import pathlib, sys
-          p = pathlib.Path("meson.build")
-          s = p.read_text()
-          old = (
-              "with_llvm = with_llvm \\\n"
-              "  .enable_if(with_clc, error_message : 'CLC requires LLVM')"
-          )
-          new = (
-              "# --- Termux cross build: PanVK JM does not need CLC, and\n"
-              "# --- there is no aarch64 LLVM in the sysroot. Force CLC\n"
-              "# --- off *before* the LLVM coupling check.\n"
-              "with_clc = false\n"
-              "with_llvm = with_llvm"
-          )
-          if old not in s:
-              print("ERROR: expected pattern not found")
-              print(old)
-              sys.exit(1)
-          p.write_text(s.replace(old, new))
-          print("OK: with_clc = false")
-          PY
-          grep -n "^with_clc" meson.build
-
-      - name: Inject Mock Libudev Headers
-        run: |
-          sudo mkdir -p /data/data/com.termux/files/usr/include
-          sudo tee /data/data/com.termux/files/usr/include/libudev.h > /dev/null << 'EOF'
-          #ifndef MOCK_LIBUDEV_H
-          #define MOCK_LIBUDEV_H
-          #include <pthread.h>
-          #ifndef PTHREAD_CANCEL_ASYNCHRONOUS
-          #define PTHREAD_CANCEL_ASYNCHRONOUS 0
-          #endif
-          #ifndef PTHREAD_CANCEL_ENABLE
-          #define PTHREAD_CANCEL_ENABLE 1
-          #endif
-          static inline int pthread_setcanceltype(int type, int *oldtype) { return 0; }
-          static inline int pthread_setcancelstate(int state, int *oldstate) { return 0; }
-          static inline int pthread_cancel(pthread_t thread) { return 0; }
-          static inline void pthread_testcancel(void) {}
-          struct udev;
-          struct udev_device;
-          struct udev_monitor;
-          struct udev_enumerate;
-          static inline struct udev *udev_new(void) { return 0; }
-          static inline struct udev *udev_ref(struct udev *u) { return u; }
-          static inline void udev_unref(struct udev *u) {}
-          static inline struct udev_device *udev_device_new_from_syspath(struct udev *u, const char *p) { return 0; }
-          static inline struct udev_device *udev_device_ref(struct udev_device *d) { return d; }
-          static inline void udev_device_unref(struct udev_device *d) {}
-          static inline const char *udev_device_get_devnode(struct udev_device *d) { return 0; }
-          static inline const char *udev_device_get_property_value(struct udev_device *d, const char *p) { return 0; }
-          #endif
-          EOF
-          sudo chmod 644 /data/data/com.termux/files/usr/include/libudev.h
+          sed -i \
+            "s|with_gallium_panfrost, with_panfrost_vk,|with_gallium_panfrost,|" \
+            meson.build
+          echo "=== with_driver_using_cl ==="
+          sed -n '/with_driver_using_cl = \[/,/\].contains(true)/p' meson.build
 
       # ------------------------------------------------------------------
-      # Meson cross file — with exe_wrapper
+      # Fix #3 — guard subdir('cl') in src/poly/meson.build
       #
-      # exe_wrapper tells Meson how to run HOST-machine executables (aarch64)
-      # during the build. When Meson needs to run vtn_bindgen2 (which is now
-      # a host-machine target after the patch above), it will call
-      # `qemu-aarch64-static <binary> <args>`.
+      # With with_clc=false, prog_mesa_clc is undefined, but
+      # src/poly/meson.build still enters subdir('cl') and fails. Wrap
+      # it in `if with_clc` so it is skipped.
       # ------------------------------------------------------------------
+      - name: Guard src/poly/cl when CLC is off
+        run: |
+          cd ~/mesa-panvk
+          sed -i "s|^subdir('cl')|if with_clc\n  subdir('cl')\nendif|" src/poly/meson.build
+          if grep -q "^if with_clc" src/poly/meson.build; then
+            echo "OK: subdir('cl') guarded"
+          else
+            echo "WARN: subdir('cl') not found — check manually"
+          fi
+          cat src/poly/meson.build
+
       - name: Create Meson cross file
         run: |
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -245,10 +148,10 @@ jobs:
           TARGET="aarch64-linux-android"
           cat > ~/cross_file.txt <<EOF
           [binaries]
-          c = '${NDK_BIN}/${TARGET}${API}-clang'
-          cpp = '${NDK_BIN}/${TARGET}${API}-clang++'
-          ar = '${NDK_BIN}/llvm-ar'
-          strip = '${NDK_BIN}/llvm-strip'
+          c       = '${NDK_BIN}/${TARGET}${API}-clang'
+          cpp     = '${NDK_BIN}/${TARGET}${API}-clang++'
+          ar      = '${NDK_BIN}/llvm-ar'
+          strip   = '${NDK_BIN}/llvm-strip'
           pkg-config = 'termux-pkg-config'
           exe_wrapper = 'qemu-aarch64-static'
 
@@ -256,23 +159,20 @@ jobs:
           needs_exe_wrapper = true
 
           [host_machine]
-          system = 'linux'
+          system     = 'linux'
           cpu_family = 'aarch64'
-          cpu = 'aarch64'
-          endian = 'little'
+          cpu        = 'aarch64'
+          endian     = 'little'
 
           [built-in options]
-          c_link_args = ['-L/data/data/com.termux/files/usr/lib']
+          c_args     = ['-I/data/data/com.termux/files/usr/include']
+          cpp_args   = ['-I/data/data/com.termux/files/usr/include']
+          c_link_args   = ['-L/data/data/com.termux/files/usr/lib']
           cpp_link_args = ['-L/data/data/com.termux/files/usr/lib']
           EOF
-
-          echo "=== cross file ==="
           cat ~/cross_file.txt
 
-          echo "=== qemu-aarch64-static presence ==="
-          command -v qemu-aarch64-static
-
-      - name: Configure Mesa build for PanVK
+      - name: Configure Mesa for PanVK cross build
         run: |
           meson setup build ~/mesa-panvk \
             --cross-file ~/cross_file.txt \
@@ -291,15 +191,18 @@ jobs:
             -Dlibunwind=disabled \
             -Dvalgrind=disabled \
             -Dperfetto=false \
+            -Dgallium-rusticl=false \
+            -Dgallium-clover=false \
+            -Dmicrosoft-clc=disabled \
+            -Dmesa-clc=auto \
             -Dprefix=/data/data/com.termux/files/usr \
             -Dc_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem" \
             -Dcpp_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem"
 
       - name: Build PanVK shared library
-        run: |
-          ninja -C build -j$(nproc) src/panfrost/vulkan/libvulkan_panfrost.so
+        run: ninja -C build -j$(nproc) src/panfrost/vulkan/libvulkan_panfrost.so
 
-      - name: Package PanVK artifacts
+      - name: Package artifacts
         run: |
           mkdir -p panvk_out/lib panvk_out/share/vulkan/icd.d
           find build -name "libvulkan_panfrost*.so" -exec cp {} panvk_out/lib/ \;
