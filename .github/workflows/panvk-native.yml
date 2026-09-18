@@ -48,13 +48,18 @@ jobs:
                 git ninja clang llvm \
                 bison flex \
                 glslang libclc spirv-tools \
-                spirv-llvm-translator \
                 libandroid-shmem libdrm libelf libexpat \
                 libx11 libxext libxfixes libxrandr \
                 libxshmfence libxxf86vm vulkan-loader \
-                zlib zstd pkg-config python python-pip cmake
+                zlib zstd pkg-config python python-pip cmake spirv-llvm-translator
 
+              # Install build tools via pip
               pip install --break-system-packages meson mako pyyaml packaging ply
+
+              # --- Ensure meson is on PATH regardless of where pip put it ---
+              export PATH="$HOME/.local/bin:$PREFIX/bin:$PATH"
+              command -v meson || { echo "ERROR: meson not found after pip install"; exit 1; }
+              meson --version
 
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
@@ -63,9 +68,8 @@ jobs:
               cd mesa-panvk
 
               # -------------------------------------------------------
-              # Configure Mesa using the flags from the project's own
-              # build-panvk-kbase.yml workflow, plus Termux-specific
-              # X11 and Android SHM link arguments.
+              # Configure Mesa using the project'\''s kbase workflow flags
+              # plus Termux-specific X11 / Android SHM link args.
               # -------------------------------------------------------
               meson setup build-bionic \
                 -Dpanvk-use-kbase=true \
