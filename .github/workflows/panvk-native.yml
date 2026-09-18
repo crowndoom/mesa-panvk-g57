@@ -53,13 +53,11 @@ jobs:
                 libxshmfence libxxf86vm vulkan-loader \
                 zlib zstd pkg-config python python-pip cmake spirv-llvm-translator
 
-              # Install build tools via pip
               pip install --break-system-packages meson mako pyyaml packaging ply
 
-              # --- Ensure meson is on PATH regardless of where pip put it ---
+              # Ensure meson is on PATH regardless of where pip put it
               export PATH="$HOME/.local/bin:$PREFIX/bin:$PATH"
-              command -v meson || { echo "ERROR: meson not found after pip install"; exit 1; }
-              meson --version
+              command -v meson || { echo "ERROR: meson not found"; exit 1; }
 
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
@@ -68,10 +66,14 @@ jobs:
               cd mesa-panvk
 
               # -------------------------------------------------------
-              # Configure Mesa using the project'\''s kbase workflow flags
-              # plus Termux-specific X11 / Android SHM link args.
+              # Configure Mesa for kbase JM on Termux
+              #
+              # -Dpanfrost-kmds=kbase    -> defines HAVE_PAN_KMOD_KBASE
+              # -Dpanvk-use-kbase=true   -> compiles the kbase submit path
+              # -Dgallium-drivers=panfrost -> required alongside panvk
               # -------------------------------------------------------
               meson setup build-bionic \
+                -Dpanfrost-kmds=kbase \
                 -Dpanvk-use-kbase=true \
                 -Dvulkan-drivers=panfrost \
                 -Dgallium-drivers=panfrost \
