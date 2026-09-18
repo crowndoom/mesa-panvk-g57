@@ -36,7 +36,7 @@ jobs:
 
               # Exact dependency list from the dev'"'"'s working recipe
               pkg install -y \
-                git clang lld meson ninja python python-pip pkg-config \
+                git clang lld  ninja python python-pip pkg-config \
                 bison flex cmake glslang shaderc vulkan-headers \
                 vulkan-loader-generic libandroid-shmem libdrm libxcb \
                 xorgproto libx11 libxshmfence zlib zstd libexpat
