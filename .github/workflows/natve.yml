@@ -24,9 +24,6 @@ permissions:
   contents: write
 
 jobs:
-  # ─────────────────────────────────────────────────────────────
-  # 1) Resolve timestamp + tag + which build types to run
-  # ─────────────────────────────────────────────────────────────
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -64,11 +61,7 @@ jobs:
             *)              TYPES='["debugoptimized","release"]' ;;
           esac
           echo "types=$TYPES" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG types=$TYPES"
 
-  # ─────────────────────────────────────────────────────────────
-  # 2) Matrix build (native Termux container, per build-type)
-  # ─────────────────────────────────────────────────────────────
   build:
     needs: prepare
     runs-on: ubuntu-24.04-arm
@@ -97,7 +90,23 @@ jobs:
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
               export BUILD_TYPE="'"${{ matrix.build-type }}"'"
 
-              pkg update -y
+              # Swap Aliyun for the official Termux mirror (Aliyun is often mid-sync)
+              mkdir -p "$PREFIX/etc/apt/sources.list.d"
+              echo "deb https://packages.termux.dev/apt/termux-main stable main" \
+                > "$PREFIX/etc/apt/sources.list.d/termux-main.list"
+
+              # Retry pkg update a few times
+              for i in 1 2 3; do
+                if pkg update -y; then
+                  break
+                fi
+                echo "pkg update attempt $i failed, retrying in 10s..."
+                sleep 10
+                if [[ $i -eq 3 ]]; then
+                  echo "pkg update failed after 3 attempts" >&2
+                  exit 1
+                fi
+              done
 
               pkg install -y \
                 git clang lld ninja python python-pip pkg-config \
@@ -140,10 +149,10 @@ jobs:
               mkdir -p /termux-out/lib
               mkdir -p /termux-out/share/vulkan/icd.d
 
-              # Copy with build-type suffix so filenames are unique across matrix jobs
               cp build-bionic/src/panfrost/vulkan/libvulkan_panfrost.so \
-             "/termux-out/lib/libvulkan_panfrost-${BUILD_TYPE}.so"
+                 /termux-out/lib/libvulkan_panfrost.so
 
+              # ── ICD manifest (exact, uses container $PREFIX) ──
               cat > /termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json <<JSON
               {
                   "ICD": {
@@ -156,7 +165,7 @@ jobs:
               JSON
 
               echo "=== ICD ==="
-              cat /termux-out/share/vulkan/icd.d/panfrost_icd.${BUILD_TYPE}.json
+              cat /termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json
               echo "=== /termux-out ==="
               find /termux-out -type f
             '
@@ -178,9 +187,6 @@ jobs:
             panvk-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz
           if-no-files-found: error
 
-  # ─────────────────────────────────────────────────────────────
-  # 3) Single release job — waits for all matrix builds to finish
-  # ─────────────────────────────────────────────────────────────
   release:
     needs: [prepare, build]
     runs-on: ubuntu-latest
@@ -211,24 +217,23 @@ jobs:
             **Build time (UTC):** `${{ needs.prepare.outputs.time }}`
             **Commit:** `${{ github.sha }}`
             **Build types:** `${{ needs.prepare.outputs.types }}`
-            **Triggered by:** `${{ github.event_name }}`
 
             ### Files
             - `panvk-termux-aarch64-debugoptimized-*.tar.gz` — full install tree (debug)
             - `panvk-termux-aarch64-release-*.tar.gz` — full install tree (release)
-            - `libvulkan_panfrost-*.so` — Vulkan driver (per build type)
-            - `panfrost_icd.*.json` — ICD manifest (per build type)
+            - `libvulkan_panfrost.so` — Vulkan driver (from the last-built variant)
+            - `panfrost_icd.aarch64.json` — ICD manifest
 
             ### Install (Termux)
             ```bash
-            # pick one variant
             tar -xzf panvk-termux-aarch64-release-*.tar.gz -C $PREFIX
-            export VK_ICD_FILENAMES=$PREFIX/share/vulkan/icd.d/panfrost_icd.release.json
+            export VK_ICD_FILENAMES=$PREFIX/share/vulkan/icd.d/panfrost_icd.aarch64.json
             ```
           files: |
             artifacts/*.tar.gz
-            artifacts/**/libvulkan_panfrost-*.so
-            artifacts/**/panfrost_icd.*.json
+            artifacts/**/libvulkan_panfrost.so
+            artifacts/**/panfrost_icd.aarch64.json
+          overwrite_files: true
           generate_release_notes: true
           prerelease: true
         env:
