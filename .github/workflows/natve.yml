@@ -141,11 +141,8 @@ jobs:
               mkdir -p /termux-out/share/vulkan/icd.d
 
               # Copy with build-type suffix so filenames are unique across matrix jobs
-              find build-bionic -name "libvulkan_panfrost*.so" sh -c '
-                for f; do
-                  cp "$f" "/termux-out/lib/$(basename "$f" .so)-${BUILD_TYPE}.so"
-                done
-              ' sh {} +
+              cp build-bionic/src/panfrost/vulkan/libvulkan_panfrost.so \
+             "/termux-out/lib/libvulkan_panfrost-${BUILD_TYPE}.so"
 
               cat > /termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json <<JSON
               {
