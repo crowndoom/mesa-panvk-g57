@@ -1,4 +1,4 @@
-name: Cross PANVK (host tools + NDK)
+name: Cross PANVK (sed patches)
 
 on:
   push:
@@ -28,11 +28,10 @@ jobs:
           sudo apt update
           sudo apt install -y ninja-build pkg-config python3-mako python3-pip \
             glslang-tools flex bison curl ca-certificates patch unzip wget \
-            file build-essential \
-            llvm-20-dev libclang-20-dev libclc-20-dev libllvmspirvlib-20-dev \
-            libelf-dev spirv-tools libdrm-dev
+            file build-essential qemu-user-static
           pip install --user meson mako pyyaml packaging ply
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          command -v qemu-aarch64-static
 
       - name: Download Android NDK
         run: |
@@ -89,6 +88,38 @@ jobs:
           SCRIPT
           sudo chmod +x /usr/local/bin/termux-pkg-config
 
+      - name: Create cross compiler wrappers
+        run: |
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          sudo tee /usr/local/bin/android-cross-cc > /dev/null << EOF
+          #!/bin/bash
+          for arg in "\$@"; do
+            case "\$arg" in
+              *sanitycheck*)
+                exec "${NDK_BIN}/aarch64-linux-android29-clang" -static "\$@"
+                ;;
+            esac
+          done
+          exec "${NDK_BIN}/aarch64-linux-android29-clang" "\$@"
+          EOF
+          sudo tee /usr/local/bin/android-cross-cxx > /dev/null << EOF
+          #!/bin/bash
+          for arg in "\$@"; do
+            case "\$arg" in
+              *sanitycheck*)
+                exec "${NDK_BIN}/aarch64-linux-android29-clang++" -static "\$@"
+                ;;
+            esac
+          done
+          exec "${NDK_BIN}/aarch64-linux-android29-clang++" "\$@"
+          EOF
+          sudo chmod 755 /usr/local/bin/android-cross-cc /usr/local/bin/android-cross-cxx
+
+          printf 'int main(void){return 0;}\n' > /tmp/sanitycheckc.c
+          /usr/local/bin/android-cross-cc /tmp/sanitycheckc.c -o /tmp/sanitycheckc
+          file /tmp/sanitycheckc
+          qemu-aarch64-static /tmp/sanitycheckc && echo "static sanity binary runs OK"
+
       - name: Clone Mesa PanVK fork
         run: git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
@@ -97,78 +128,78 @@ jobs:
           cd ~/mesa-panvk
           sed -i -E "s/dependency\('libudev'[^)]*\)/dependency('libudev', required : false, disabler : true)/g" meson.build
           sed -i "s/has_header('libudev.h')/false/g" meson.build
-          echo "=== libudev references ==="
-          grep -n "libudev" meson.build || true
 
-      # ------------------------------------------------------------------
-      # Fork fixes (kept defensive; with mesa-clc=system most are unused)
-      # ------------------------------------------------------------------
-      - name: Fix vtn_bindgen2 for cross build
+      - name: Apply Termux CLC cross patches
         run: |
           cd ~/mesa-panvk
+
+          # --------------------------------------------------------------
+          # Fix #1 — src/compiler/spirv/meson.build
+          #   ERROR: Tried to mix a host machine library ("vtn") with a
+          #   build machine target "vtn_bindgen2". vtn_bindgen2 is native
+          #   (build machine) but pulled libvtn (host) via idep_vtn.
+          #   PanVK doesn't use it — vtn_bindgen2 only reads headers.
+          # --------------------------------------------------------------
           sed -i \
             -e "s|\['vtn_bindgen2.c'\],|['vtn_bindgen2.c', vtn_generator_ids_h, spirv_info_h],|" \
             -e "s|dependencies : \[idep_vtn, idep_mesautil, idep_nir\],|dependencies : [],|" \
             src/compiler/spirv/meson.build
 
-      - name: Drop PanVK from CLC drivers list
-        run: |
-          cd ~/mesa-panvk
-          sed -i "s|with_gallium_panfrost, with_panfrost_vk,|with_gallium_panfrost,|" meson.build
+          # --------------------------------------------------------------
+          # Fix #2 — top-level meson.build
+          #   Fork wrongly lists with_panfrost_vk in with_driver_using_cl,
+          #   forcing with_clc=true which drags in LLVM/CLC.
+          # --------------------------------------------------------------
+          sed -i \
+            "s|with_gallium_panfrost, with_panfrost_vk,|with_gallium_panfrost,|" \
+            meson.build
 
-      - name: Guard src/poly CLC subdir when CLC is off
-        run: |
-          cd ~/mesa-panvk
-          sed -i "s|^subdir('clc')|if with_clc\n  subdir('clc')\nendif|" src/poly/meson.build
-          sed -i "s|^subdir('cl')|if with_clc\n  subdir('cl')\nendif|"  src/poly/meson.build
+          # --------------------------------------------------------------
+          # Fix #3 — src/poly/meson.build
+          #   src/poly/cl/meson.build uses prog_mesa_clc, undefined when
+          #   with_clc=false. Skip the whole subdir.
+          # --------------------------------------------------------------
+          sed -i "s|^[[:space:]]*subdir('cl')[[:space:]]*$|# Termux: poly cl subdir disabled (PanVK uses no CLC)|" \
+            src/poly/meson.build
 
-      # ------------------------------------------------------------------
-      # STEP 1 — Build native host tools.
-      #
-      # These run on the GitHub runner (x86_64) and are consumed by the
-      # cross build via -Dmesa-clc=system / -Dprecomp-compiler=system.
-      # Because these are built natively, no qemu-user-static or
-      # exe_wrapper is needed anywhere in this workflow.
-      # ------------------------------------------------------------------
-      - name: Build native host tools
-        run: |
-          cd ~/mesa-panvk
-          meson setup build-host \
-            -Dplatforms=[] \
-            -Dgallium-drivers=[] \
-            -Dvulkan-drivers=[] \
-            -Dtools=panfrost \
-            -Dprecomp-compiler=enabled \
-            -Dinstall-precomp-compiler=true \
-            -Dllvm=enabled \
-            -Dmesa-clc=enabled \
-            -Dinstall-mesa-clc=true
+          # --------------------------------------------------------------
+          # Fix #4 — src/poly/nir/meson.build
+          #   src/poly/nir uses idep_libpoly normally defined by
+          #   src/poly/cl/meson.build which Fix #3 skips.
+          # --------------------------------------------------------------
+          sed -i "1i if not is_variable('idep_libpoly')\n  idep_libpoly = declare_dependency()\nendif\n" \
+            src/poly/nir/meson.build
 
-          ninja -C build-host \
-            src/compiler/clc/mesa_clc \
-            src/compiler/spirv/vtn_bindgen2 \
-            src/panfrost/clc/panfrost_compile
+          # --------------------------------------------------------------
+          # Fix #5 — src/panfrost/meson.build
+          #   src/panfrost/clc/meson.build mixes panfrost_compile (native)
+          #   with panfrost_compiler (host). Comment out the subdir call.
+          # --------------------------------------------------------------
+          sed -i "s|^[[:space:]]*subdir('clc')[[:space:]]*$|# Termux: panfrost clc subdir disabled (PanVK uses no CLC)|" \
+            src/panfrost/meson.build
 
-          # Meson looks for hyphenated names when mesa-clc=system
-          ln -sf "$PWD/build-host/src/compiler/clc/mesa_clc"        "$PWD/build-host/src/compiler/clc/mesa-clc"
-          ln -sf "$PWD/build-host/src/compiler/spirv/vtn_bindgen2"  "$PWD/build-host/src/compiler/spirv/vtn-bindgen2"
+          echo "=== Verify vtn_bindgen2 ==="
+          sed -n '/prog_vtn_bindgen2 = executable/,/^   )/p' src/compiler/spirv/meson.build
+          echo "=== Verify with_driver_using_cl ==="
+          grep -n "with_driver_using_cl" meson.build || true
+          echo "=== Verify src/poly ==="
+          grep -n "subdir" src/poly/meson.build || true
+          echo "=== Verify src/panfrost ==="
+          grep -n "subdir" src/panfrost/meson.build || true
 
-          echo "$PWD/build-host/src/compiler/clc"     >> $GITHUB_PATH
-          echo "$PWD/build-host/src/compiler/spirv"   >> $GITHUB_PATH
-          echo "$PWD/build-host/src/panfrost/clc"     >> $GITHUB_PATH
-
-      # ------------------------------------------------------------------
-      # STEP 2 — Cross-compile only the target Vulkan ICD.
-      # ------------------------------------------------------------------
       - name: Create Meson cross file
         run: |
           cat > ~/cross_file.txt <<EOF
           [binaries]
-          c       = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang'
-          cpp     = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang++'
+          c       = '/usr/local/bin/android-cross-cc'
+          cpp     = '/usr/local/bin/android-cross-cxx'
           ar      = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
           strip   = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
           pkg-config = 'termux-pkg-config'
+          exe_wrapper = 'qemu-aarch64-static'
+
+          [properties]
+          needs_exe_wrapper = true
 
           [host_machine]
           system     = 'linux'
@@ -206,8 +237,6 @@ jobs:
             -Dbuild-tests=false \
             -Dlibunwind=disabled \
             -Dperfetto=false \
-            -Dmesa-clc=system \
-            -Dprecomp-compiler=system \
             -Dprefix=/data/data/com.termux/files/usr \
             -Dc_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem" \
             -Dcpp_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem"
