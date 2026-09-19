@@ -1,0 +1,203 @@
+name: Build PanVK for Termux (aarch64, native)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type"
+        type: choice
+        required: true
+        default: both
+        options:
+          - both
+          - debugoptimized
+          - release
+      release_tag:
+        description: "Tag to create (leave empty to auto-generate)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # 1) Resolve timestamp + tag once so both matrix jobs agree
+  # ─────────────────────────────────────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      date:  ${{ steps.ts.outputs.date }}
+      time:  ${{ steps.ts.outputs.time }}
+      stamp: ${{ steps.ts.outputs.stamp }}
+      tag:   ${{ steps.ts.outputs.tag }}
+      types: ${{ steps.ts.outputs.types }}
+    steps:
+      - name: Compute build timestamp and tag
+        id: ts
+        run: |
+          DATE=$(date -u +'%Y-%m-%d')
+          TIME=$(date -u +'%H%M%S')
+          STAMP="${DATE}-${TIME}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "date=$DATE"           >> "$GITHUB_OUTPUT"
+          echo "time=$TIME"           >> "$GITHUB_OUTPUT"
+          echo "stamp=$STAMP"         >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          else
+            TAG="build-${DATE}-${TIME}-${SHORT_SHA}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Resolve which build types to run into a JSON array for the matrix
+          CHOICE="${{ github.event.inputs.build_type }}"
+          case "$CHOICE" in
+            release)        TYPES='["release"]' ;;
+            debugoptimized) TYPES='["debugoptimized"]' ;;
+            *)              TYPES='["debugoptimized","release"]' ;;
+          esac
+          echo "types=$TYPES" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG types=$TYPES"
+
+  # ─────────────────────────────────────────────────────────────
+  # 2) Matrix build (native Termux container, per build-type)
+  # ─────────────────────────────────────────────────────────────
+  build:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        build-type: ${{ fromJSON(needs.prepare.outputs.types) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build PanVK (${{ matrix.build-type }}) inside Termux container
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${{ github.workspace }}/termux-out-${{ matrix.build-type }}"
+          chmod 777 "${{ github.workspace }}/termux-out-${{ matrix.build-type }}"
+
+          docker run --rm \
+            -v "${{ github.workspace }}/termux-out-${{ matrix.build-type }}:/termux-out" \
+            -e BUILD_TYPE="${{ matrix.build-type }}" \
+            termux/termux-docker:aarch64 \
+            bash -c '
+              set -euo pipefail
+              export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
+
+              pkg update -y
+              pkg install -y \
+                git clang lld ninja python python-pip pkg-config \
+                bison flex cmake glslang shaderc vulkan-headers \
+                vulkan-loader-generic libandroid-shmem libdrm libxcb \
+                xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
+                libxrandr libxrandr-static
+
+              pip install --break-system-packages meson mako pyyaml packaging
+
+              mkdir -p "$TMPDIR"; cd "$TMPDIR"
+              rm -rf mesa-panvk
+              git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
+              cd mesa-panvk
+
+              meson setup build-bionic \
+                -Dbuildtype="$BUILD_TYPE" \
+                -Dvulkan-drivers=panfrost \
+                -Dgallium-drivers= \
+                -Dpanfrost-kmds=kbase,panthor \
+                -Dplatforms=x11 \
+                -Dglx=disabled \
+                -Degl=disabled \
+                -Dopengl=false \
+                -Dgles1=disabled \
+                -Dgles2=disabled \
+                -Dbuild-tests=false \
+                -Dlibunwind=disabled \
+                -Dvalgrind=disabled \
+                -Dperfetto=false \
+                -Dpanvk-use-kbase=true \
+                -Dprefix="$PREFIX" \
+                -Dc_link_args=-landroid-shmem \
+                -Dcpp_link_args=-landroid-shmem
+
+              ninja -C build-bionic -j$(nproc) \
+                src/panfrost/vulkan/libvulkan_panfrost.so
+
+              mkdir -p /termux-out/lib /termux-out/share/vulkan/icd.d
+              find build-bionic -name "libvulkan_panfrost*.so" -exec cp {} /termux-out/lib/ \;
+              find build-bionic -name "panfrost_icd*.json" -exec cp {} /termux-out/share/vulkan/icd.d/ \;
+              find /termux-out -type f
+            '
+
+      - name: Package tarball (${{ matrix.build-type }})
+        run: |
+          set -euo pipefail
+          cd "termux-out-${{ matrix.build-type }}"
+          TARBALL="panvk-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz"
+          tar -czvf "../${TARBALL}" .
+          ls -lh "../${TARBALL}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: panvk-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}
+          path: |
+            termux-out-${{ matrix.build-type }}/
+            panvk-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────
+  # 3) Single release job — waits for all matrix builds to finish
+  # ─────────────────────────────────────────────────────────────
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: find artifacts -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: "${{ needs.prepare.outputs.tag }} — PanVK ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }} UTC"
+          body: |
+            ## PanVK for Termux (aarch64, native build)
+
+            **Build date (UTC):** `${{ needs.prepare.outputs.date }}`
+            **Build time (UTC):** `${{ needs.prepare.outputs.time }}`
+            **Commit:** `${{ github.sha }}`
+            **Build types:** `${{ needs.prepare.outputs.types }}`
+
+            ### Install (Termux)
+            ```bash
+            tar -xzf panvk-termux-aarch64-<buildtype>-*.tar.gz -C $PREFIX
+            export VK_ICD_FILENAMES=$PREFIX/share/vulkan/icd.d/panfrost_icd.aarch64.json
+            ```
+          files: |
+            artifacts/*.tar.gz
+            artifacts/**/libvulkan_panfrost*.so
+            artifacts/**/panfrost_icd*.json
+          generate_release_notes: true
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
