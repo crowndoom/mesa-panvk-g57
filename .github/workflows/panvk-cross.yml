@@ -93,32 +93,49 @@ jobs:
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           sudo tee /usr/local/bin/android-cross-cc > /dev/null << EOF
           #!/bin/bash
+          echo "\$@" >> /tmp/cc-invocations.log
+
+          shared=0
+          compile_only=0
           for arg in "\$@"; do
             case "\$arg" in
-              *sanitycheck*)
-                exec "${NDK_BIN}/aarch64-linux-android29-clang" -static "\$@"
-                ;;
+              -shared|*.so|*.so.*)   shared=1 ;;
+              -c|-E|-S|-M|-MM|-fsyntax-only) compile_only=1 ;;
             esac
           done
-          exec "${NDK_BIN}/aarch64-linux-android29-clang" "\$@"
+
+          if [ "\$shared" = "1" ] || [ "\$compile_only" = "1" ]; then
+            exec "${NDK_BIN}/aarch64-linux-android29-clang" "\$@"
+          fi
+          exec "${NDK_BIN}/aarch64-linux-android29-clang" -static "\$@"
           EOF
+
           sudo tee /usr/local/bin/android-cross-cxx > /dev/null << EOF
           #!/bin/bash
+          echo "\$@" >> /tmp/cxx-invocations.log
+
+          shared=0
+          compile_only=0
           for arg in "\$@"; do
             case "\$arg" in
-              *sanitycheck*)
-                exec "${NDK_BIN}/aarch64-linux-android29-clang++" -static "\$@"
-                ;;
+              -shared|*.so|*.so.*)   shared=1 ;;
+              -c|-E|-S|-M|-MM|-fsyntax-only) compile_only=1 ;;
             esac
           done
-          exec "${NDK_BIN}/aarch64-linux-android29-clang++" "\$@"
+
+          if [ "\$shared" = "1" ] || [ "\$compile_only" = "1" ]; then
+            exec "${NDK_BIN}/aarch64-linux-android29-clang++" "\$@"
+          fi
+          exec "${NDK_BIN}/aarch64-linux-android29-clang++" -static "\$@"
           EOF
+
           sudo chmod 755 /usr/local/bin/android-cross-cc /usr/local/bin/android-cross-cxx
 
-          printf 'int main(void){return 0;}\n' > /tmp/sanitycheckc.c
-          /usr/local/bin/android-cross-cc /tmp/sanitycheckc.c -o /tmp/sanitycheckc
-          file /tmp/sanitycheckc
-          qemu-aarch64-static /tmp/sanitycheckc && echo "static sanity binary runs OK"
+          # Smoke test: linking an executable must produce a static ELF.
+          printf 'int main(void){return 0;}\n' > /tmp/hello.c
+          /usr/local/bin/android-cross-cc /tmp/hello.c -o /tmp/hello
+          file /tmp/hello
+          qemu-aarch64-static /tmp/hello && echo "executable-link smoke test OK"
 
       - name: Clone Mesa PanVK fork
         run: git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
@@ -133,58 +150,36 @@ jobs:
         run: |
           cd ~/mesa-panvk
 
-          # --------------------------------------------------------------
           # Fix #1 — src/compiler/spirv/meson.build
-          #   ERROR: Tried to mix a host machine library ("vtn") with a
-          #   build machine target "vtn_bindgen2". vtn_bindgen2 is native
-          #   (build machine) but pulled libvtn (host) via idep_vtn.
-          #   PanVK doesn't use it — vtn_bindgen2 only reads headers.
-          # --------------------------------------------------------------
           sed -i \
             -e "s|\['vtn_bindgen2.c'\],|['vtn_bindgen2.c', vtn_generator_ids_h, spirv_info_h],|" \
             -e "s|dependencies : \[idep_vtn, idep_mesautil, idep_nir\],|dependencies : [],|" \
             src/compiler/spirv/meson.build
 
-          # --------------------------------------------------------------
           # Fix #2 — top-level meson.build
-          #   Fork wrongly lists with_panfrost_vk in with_driver_using_cl,
-          #   forcing with_clc=true which drags in LLVM/CLC.
-          # --------------------------------------------------------------
           sed -i \
             "s|with_gallium_panfrost, with_panfrost_vk,|with_gallium_panfrost,|" \
             meson.build
 
-          # --------------------------------------------------------------
           # Fix #3 — src/poly/meson.build
-          #   src/poly/cl/meson.build uses prog_mesa_clc, undefined when
-          #   with_clc=false. Skip the whole subdir.
-          # --------------------------------------------------------------
           sed -i "s|^[[:space:]]*subdir('cl')[[:space:]]*$|# Termux: poly cl subdir disabled (PanVK uses no CLC)|" \
             src/poly/meson.build
 
-          # --------------------------------------------------------------
           # Fix #4 — src/poly/nir/meson.build
-          #   src/poly/nir uses idep_libpoly normally defined by
-          #   src/poly/cl/meson.build which Fix #3 skips.
-          # --------------------------------------------------------------
           sed -i "1i if not is_variable('idep_libpoly')\n  idep_libpoly = declare_dependency()\nendif\n" \
             src/poly/nir/meson.build
 
-          # --------------------------------------------------------------
           # Fix #5 — src/panfrost/meson.build
-          #   src/panfrost/clc/meson.build mixes panfrost_compile (native)
-          #   with panfrost_compiler (host). Comment out the subdir call.
-          # --------------------------------------------------------------
           sed -i "s|^[[:space:]]*subdir('clc')[[:space:]]*$|# Termux: panfrost clc subdir disabled (PanVK uses no CLC)|" \
             src/panfrost/meson.build
 
-          echo "=== Verify vtn_bindgen2 ==="
-          sed -n '/prog_vtn_bindgen2 = executable/,/^   )/p' src/compiler/spirv/meson.build
-          echo "=== Verify with_driver_using_cl ==="
+          echo "=== vtn_bindgen2 ==="
+          sed -n '/prog_vtn_bindgen2 = executable/,/^   )/p' src/compiler/spirv/meson.build || true
+          echo "=== with_driver_using_cl ==="
           grep -n "with_driver_using_cl" meson.build || true
-          echo "=== Verify src/poly ==="
-          grep -n "subdir" src/poly/meson.build || true
-          echo "=== Verify src/panfrost ==="
+          echo "=== src/poly/meson.build ==="
+          cat src/poly/meson.build
+          echo "=== src/panfrost/meson.build ==="
           grep -n "subdir" src/panfrost/meson.build || true
 
       - name: Create Meson cross file
@@ -240,6 +235,16 @@ jobs:
             -Dprefix=/data/data/com.termux/files/usr \
             -Dc_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem" \
             -Dcpp_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem"
+
+      - name: Dump compiler invocations on failure
+        if: failure()
+        run: |
+          echo "=== cc invocations (last 50) ==="
+          tail -50 /tmp/cc-invocations.log 2>/dev/null || true
+          echo "=== cxx invocations (last 50) ==="
+          tail -50 /tmp/cxx-invocations.log 2>/dev/null || true
+          echo "=== meson log (last 200) ==="
+          tail -200 ~/mesa-panvk/build/meson-logs/meson-log.txt 2>/dev/null || true
 
       - name: Build PanVK shared library
         run: |
