@@ -28,7 +28,7 @@ jobs:
   # 1) Resolve timestamp + tag + which build types to run
   # ─────────────────────────────────────────────────────────────
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     outputs:
       date:  ${{ steps.ts.outputs.date }}
       time:  ${{ steps.ts.outputs.time }}
@@ -91,11 +91,11 @@ jobs:
 
           docker run --rm \
             -v "${{ github.workspace }}/termux-out-${{ matrix.build-type }}:/termux-out" \
-            -e BUILD_TYPE="${{ matrix.build-type }}" \
             termux/termux-docker:aarch64 \
             bash -c '
               set -euo pipefail
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
+              export BUILD_TYPE="'"${{ matrix.build-type }}"'"
 
               pkg update -y
 
