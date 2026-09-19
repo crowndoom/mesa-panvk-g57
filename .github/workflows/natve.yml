@@ -99,14 +99,13 @@ jobs:
 
               pkg update -y
 
-              # LLVM-related packages are required for CLC / PanVK
+              # Exact dependency list from the dev'"'"'s working recipe — unchanged
               pkg install -y \
                 git clang lld ninja python python-pip pkg-config \
                 bison flex cmake glslang shaderc vulkan-headers \
                 vulkan-loader-generic libandroid-shmem libdrm libxcb \
                 xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
-                libxrandr libxrandr-static \
-                llvm mesa-clc precomp-compiler
+                libxrandr libxrandr-static
 
               pip install --break-system-packages meson mako pyyaml packaging
 
@@ -116,6 +115,7 @@ jobs:
               git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
               cd mesa-panvk
 
+              # Working dev recipe + safe extra disables (no -Dllvm=disabled)
               meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
                 -Dvulkan-drivers=panfrost \
@@ -129,14 +129,11 @@ jobs:
                 -Dgles1=disabled \
                 -Dgles2=disabled \
                 -Dglvnd=disabled \
-                -Dshared-glapi=disabled \
                 -Dbuild-tests=false \
                 -Dlibunwind=disabled \
                 -Dvalgrind=disabled \
                 -Dperfetto=false \
                 -Dpanvk-use-kbase=true \
-                -Dmesa-clc=system \
-                -Dprecomp-compiler=system \
                 -Dprefix="$PREFIX" \
                 -Dc_link_args=-landroid-shmem \
                 -Dcpp_link_args=-landroid-shmem
