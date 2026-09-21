@@ -134,7 +134,6 @@ jobs:
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
             cr shims/librt.a
 
-          # Real pkg-config module names that Mesa asks for.
           cat > shims/xrandr.pc << 'EOF'
           Name: xrandr
           Description: xrandr
@@ -146,7 +145,7 @@ jobs:
           cat > shims/libdrm.pc << 'EOF'
           Name: libdrm
           Description: libdrm
-          Version: 2.4
+          Version: 2.4.109
           Libs: -ldrm
           Cflags:
           EOF
