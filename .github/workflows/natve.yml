@@ -128,7 +128,7 @@ jobs:
                 bison flex cmake glslang shaderc vulkan-headers \
                 vulkan-loader-generic libandroid-shmem libdrm libxcb \
                 xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
-                libxrandr libxrandr-static patch
+                libxrandr libxrandr-static patch perl
 
               pip install --break-system-packages meson mako pyyaml packaging
 
@@ -156,6 +156,40 @@ jobs:
                 echo "WARNING: /patch/sigbus.patch not found, building unpatched"
                 ls -la /patch || true
               fi
+
+              # ── Strip PANVKDBG debug spam ─────────────────────────────
+              # The fork scatters fprintf(stderr, "PANVKDBG ...") across
+              # many files with no macro guard. Each call is a real
+              # fprintf + write(2) syscall, killing runtime perf.
+              # Use a slurp-mode perl regex to remove the entire
+              # multi-line fprintf statement when it contains PANVKDBG.
+              echo "=============================================="
+              echo "Stripping PANVKDBG debug fprintf calls ..."
+              echo "=============================================="
+
+              BEFORE=$(grep -rc "PANVKDBG" src --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null | awk -F: "{s+=\$2} END {print s+0}")
+              echo "PANVKDBG occurrences before: $BEFORE"
+
+              grep -rl "fprintf.*PANVKDBG" src \
+                   --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null \
+              | xargs -r perl -0777 -pi -e \
+                  "s{\bfprintf\s*\(\s*stderr\s*,(?:(?!\)\s*;).)*?PANVKDBG(?:(?!\)\s*;).)*?\)\s*;}{}gsx"
+
+              AFTER=$(grep -rc "PANVKDBG" src --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null | awk -F: "{s+=\$2} END {print s+0}")
+              echo "PANVKDBG occurrences after:  $AFTER"
+
+              if [[ "$AFTER" -gt 0 ]]; then
+                echo ">>> Remaining PANVKDBG references (should only be comments):"
+                grep -rn "PANVKDBG" src --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null | head -20 || true
+              else
+                echo ">>> All PANVKDBG fprintf calls removed."
+              fi
+
+              # Sanity: make sure we did not accidentally rip out real code
+              echo "--- diff stat after PANVKDBG strip ---"
+              git --no-pager diff --stat || true
+              echo "--------------------------------------"
+              # ──────────────────────────────────────────────────────────
 
               meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
@@ -251,6 +285,11 @@ jobs:
             **Build time (UTC):** `${{ needs.prepare.outputs.time }}`
             **Commit:** `${{ github.sha }}`
             **Build types:** `${{ needs.prepare.outputs.types }}`
+
+            ### Build customizations
+            - `sigbus.patch` applied (SHM debug dump SIGBUS fix)
+            - `PANVKDBG` debug fprintf calls stripped at source
+              (removes a huge perf hit from per-draw stderr writes)
 
             ### Files
             - `panvk-termux-aarch64-debugoptimized-*.tar.gz` — full install tree (debug)
