@@ -89,6 +89,33 @@ jobs:
           echo "--- first 30 lines ---"
           head -n 30 "$PATCH"
 
+      - name: Create PanVK silence header on runner
+        run: |
+          set -euo pipefail
+          HDR="${{ github.workspace }}/panvk_silence.h"
+          cat > "$HDR" <<'EOF'
+          #pragma once
+          #include <stdio.h>
+          #include <string.h>
+          #include <stdarg.h>
+
+          static inline int __panvk_silence_fprintf(FILE *fp, const char *fmt, ...) {
+              if (fp == stderr && fmt && strncmp(fmt, "PANVKDBG", 8) == 0)
+                  return 0;
+              va_list ap;
+              va_start(ap, fmt);
+              int r = vfprintf(fp, fmt, ap);
+              va_end(ap);
+              return r;
+          }
+
+          #define fprintf(fp, ...) __panvk_silence_fprintf((fp), __VA_ARGS__)
+          EOF
+          echo "--- wrote $HDR ---"
+          wc -l "$HDR"
+          echo "--- contents ---"
+          cat "$HDR"
+
       - name: Build PanVK (${{ matrix.build-type }}) inside Termux container
         run: |
           set -euo pipefail
@@ -157,47 +184,29 @@ jobs:
                 ls -la /patch || true
               fi
 
-              # ── Silence PANVKDBG via -include header ──────────────────
-              # Safe alternative to source-stripping: shadow fprintf() with
-              # an inline wrapper that returns immediately when the format
-              # string starts with "PANVKDBG". Because the format string is
-              # always a literal, the compiler folds the strncmp at compile
-              # time and DCEs the entire call — same perf as a source strip,
-              # but no chance of breaking unbraced if/else bodies.
+              # ── Install PANVKDBG silence header (copied from host) ──
               echo "=============================================="
               echo "Installing PANVKDBG silence header ..."
               echo "=============================================="
 
+              if [[ ! -f /patch/panvk_silence.h ]]; then
+                echo "ERROR: /patch/panvk_silence.h missing — host step did not run"
+                ls -la /patch || true
+                exit 1
+              fi
+
+              cp /patch/panvk_silence.h "$PWD/src/panvk_silence.h"
               SILENCE_H="$PWD/src/panvk_silence.h"
-              cat > "$SILENCE_H" <<'"'"'HDR'"'"'
-              #pragma once
-              #include <stdio.h>
-              #include <string.h>
-              #include <stdarg.h>
-
-              static inline int __panvk_silence_fprintf(FILE *fp, const char *fmt, ...) {
-                  if (fp == stderr && fmt && strncmp(fmt, "PANVKDBG", 8) == 0)
-                      return 0;
-                  va_list ap;
-                  va_start(ap, fmt);
-                  int r = vfprintf(fp, fmt, ap);
-                  va_end(ap);
-                  return r;
-              }
-
-              #define fprintf(fp, ...) __panvk_silence_fprintf((fp), __VA_ARGS__)
-              HDR
-
-              echo "Wrote $SILENCE_H"
+              echo "Installed at: $SILENCE_H"
               wc -l "$SILENCE_H"
               head -3 "$SILENCE_H"
 
               # Feed it to every C/C++ compile via CFLAGS/CXXFLAGS.
-              # Meson reads these at setup time and uses them as the
-              # project-wide default c_args / cpp_args.
+              # Meson reads these at setup time as default c_args/cpp_args.
               export CFLAGS="-include $SILENCE_H"
               export CXXFLAGS="-include $SILENCE_H"
               echo "CFLAGS=$CFLAGS"
+              echo "CXXFLAGS=$CXXFLAGS"
               # ──────────────────────────────────────────────────────────
 
               meson setup build-bionic \
@@ -229,17 +238,17 @@ jobs:
               cp build-bionic/src/panfrost/vulkan/libvulkan_panfrost.so \
                  /termux-out/lib/libvulkan_panfrost.so
 
-              # ── Verify the silence header actually took effect ──
+              # ── Verify the silence header worked ──
               echo "=============================================="
               echo "Verifying PANVKDBG strings are gone from .so ..."
               echo "=============================================="
               PANVKDBG_STRINGS=$(strings /termux-out/lib/libvulkan_panfrost.so | grep -c "PANVKDBG" || true)
-              echo "PANVKDBG string literals remaining in .so: $PANVKDBG_STRINGS"
+              echo "PANVKDBG string literals remaining: $PANVKDBG_STRINGS"
               if [[ "$PANVKDBG_STRINGS" -lt 20 ]]; then
                 echo ">>> PASS: silence header worked (calls DCEd)"
               else
-                echo ">>> WARNING: many PANVKDBG strings still present — header may not have been applied"
-                strings /termux-out/lib/libvulkan_panfrost.so | grep "PANVKDBG" | head -10
+                echo ">>> WARNING: many PANVKDBG strings still present"
+                strings /termux-out/lib/libvulkan_panfrost.so | grep "PANVKDBG" | head -10 || true
               fi
               # ─────────────────────────────────────────────────────
 
@@ -259,6 +268,8 @@ jobs:
               cat /termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json
               echo "=== /termux-out ==="
               find /termux-out -type f
+              echo "=== sizes ==="
+              ls -lh /termux-out/lib/
             '
 
       - name: Package tarball (${{ matrix.build-type }})
@@ -312,9 +323,9 @@ jobs:
             ### Build customizations
             - `sigbus.patch` applied (SHM debug dump SIGBUS fix)
             - `PANVKDBG` debug fprintf calls silenced via a `-include`
-              wrapper that lets the compiler DCE every PANVKDBG call.
-              Same performance as a source strip, but cannot break
-              control flow.
+              wrapper — the compiler folds the check at compile time and
+              dead-code eliminates every PANVKDBG call site. Same runtime
+              performance as a source-level strip, no risk to control flow.
 
             ### Files
             - `panvk-termux-aarch64-debugoptimized-*.tar.gz` — full install tree (debug)
