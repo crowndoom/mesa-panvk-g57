@@ -1,4 +1,4 @@
-name: Cross PANVK (sed patches)
+name: Cross PANVK (host tools + shims)
 
 on:
   push:
@@ -28,10 +28,11 @@ jobs:
           sudo apt update
           sudo apt install -y ninja-build pkg-config python3-mako python3-pip \
             glslang-tools flex bison curl ca-certificates patch unzip wget \
-            file build-essential qemu-user-static
+            file build-essential \
+            llvm-20-dev libclang-20-dev libclc-20-dev libllvmspirvlib-20-dev \
+            libelf-dev spirv-tools libdrm-dev
           pip install --user meson mako pyyaml packaging ply
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          command -v qemu-aarch64-static
 
       - name: Download Android NDK
         run: |
@@ -59,6 +60,7 @@ jobs:
           BASE="https://packages.termux.dev/apt/termux-main"
           for pkg in libdrm libandroid-shmem libclc spirv-tools \
                      spirv-llvm-translator libxcb xorgproto libx11 libxshmfence \
+                     libxrandr libxext libxfixes libxxf86vm \
                      zlib zstd libexpat; do
             wget -q -r -l1 -np -nH --cut-dirs=0 \
               --accept-regex "${pkg}_.*_aarch64\.deb|${pkg}_.*_all\.deb" \
@@ -78,65 +80,6 @@ jobs:
           sudo cp "$SRC" "$NDK_SYSROOT_LIB/libatomic.a"
           sudo chmod 644 "$NDK_SYSROOT_LIB/libatomic.a"
 
-      - name: Setup pkg-config wrapper
-        run: |
-          sudo tee /usr/local/bin/termux-pkg-config > /dev/null << 'SCRIPT'
-          #!/bin/bash
-          export PKG_CONFIG_LIBDIR=/data/data/com.termux/files/usr/lib/pkgconfig:/data/data/com.termux/files/usr/share/pkgconfig
-          export PKG_CONFIG_SYSROOT_DIR=/data/data/com.termux/files/usr
-          exec /usr/bin/pkg-config "$@"
-          SCRIPT
-          sudo chmod +x /usr/local/bin/termux-pkg-config
-
-      - name: Create cross compiler wrappers
-        run: |
-          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          sudo tee /usr/local/bin/android-cross-cc > /dev/null << EOF
-          #!/bin/bash
-          echo "\$@" >> /tmp/cc-invocations.log
-
-          shared=0
-          compile_only=0
-          for arg in "\$@"; do
-            case "\$arg" in
-              -shared|*.so|*.so.*)   shared=1 ;;
-              -c|-E|-S|-M|-MM|-fsyntax-only) compile_only=1 ;;
-            esac
-          done
-
-          if [ "\$shared" = "1" ] || [ "\$compile_only" = "1" ]; then
-            exec "${NDK_BIN}/aarch64-linux-android29-clang" "\$@"
-          fi
-          exec "${NDK_BIN}/aarch64-linux-android29-clang" -static "\$@"
-          EOF
-
-          sudo tee /usr/local/bin/android-cross-cxx > /dev/null << EOF
-          #!/bin/bash
-          echo "\$@" >> /tmp/cxx-invocations.log
-
-          shared=0
-          compile_only=0
-          for arg in "\$@"; do
-            case "\$arg" in
-              -shared|*.so|*.so.*)   shared=1 ;;
-              -c|-E|-S|-M|-MM|-fsyntax-only) compile_only=1 ;;
-            esac
-          done
-
-          if [ "\$shared" = "1" ] || [ "\$compile_only" = "1" ]; then
-            exec "${NDK_BIN}/aarch64-linux-android29-clang++" "\$@"
-          fi
-          exec "${NDK_BIN}/aarch64-linux-android29-clang++" -static "\$@"
-          EOF
-
-          sudo chmod 755 /usr/local/bin/android-cross-cc /usr/local/bin/android-cross-cxx
-
-          # Smoke test: linking an executable must produce a static ELF.
-          printf 'int main(void){return 0;}\n' > /tmp/hello.c
-          /usr/local/bin/android-cross-cc /tmp/hello.c -o /tmp/hello
-          file /tmp/hello
-          qemu-aarch64-static /tmp/hello && echo "executable-link smoke test OK"
-
       - name: Clone Mesa PanVK fork
         run: git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
 
@@ -145,82 +88,195 @@ jobs:
           cd ~/mesa-panvk
           sed -i -E "s/dependency\('libudev'[^)]*\)/dependency('libudev', required : false, disabler : true)/g" meson.build
           sed -i "s/has_header('libudev.h')/false/g" meson.build
+          echo "=== libudev references ==="
+          grep -n "libudev" meson.build || true
 
-      - name: Apply Termux CLC cross patches
+      # ------------------------------------------------------------------
+      # STEP 1 — Build host tools natively on the x86_64 runner.
+      #
+      # These are consumed by the cross build via mesa-clc=system and
+      # precomp-compiler=system. Because they are built natively, no
+      # qemu-user-static, no exe_wrapper, and no compiler wrapper are
+      # needed anywhere. This is the same pattern as the reference.
+      # ------------------------------------------------------------------
+      - name: Build host tools
         run: |
           cd ~/mesa-panvk
+          meson setup build-host \
+            -Dplatforms=[] \
+            -Dgallium-drivers=[] \
+            -Dvulkan-drivers=[] \
+            -Dtools=panfrost \
+            -Dprecomp-compiler=enabled \
+            -Dinstall-precomp-compiler=true \
+            -Dllvm=enabled \
+            -Dmesa-clc=enabled \
+            -Dinstall-mesa-clc=true
 
-          # Fix #1 — src/compiler/spirv/meson.build
-          sed -i \
-            -e "s|\['vtn_bindgen2.c'\],|['vtn_bindgen2.c', vtn_generator_ids_h, spirv_info_h],|" \
-            -e "s|dependencies : \[idep_vtn, idep_mesautil, idep_nir\],|dependencies : [],|" \
-            src/compiler/spirv/meson.build
+          ninja -C build-host \
+            src/compiler/clc/mesa_clc \
+            src/compiler/spirv/vtn_bindgen2 \
+            src/panfrost/clc/panfrost_compile
 
-          # Fix #2 — top-level meson.build
-          sed -i \
-            "s|with_gallium_panfrost, with_panfrost_vk,|with_gallium_panfrost,|" \
-            meson.build
+          # Hyphenated aliases so Meson's find_program() finds them when
+          # mesa-clc=system and precomp-compiler=system are set.
+          ln -sf "$PWD/build-host/src/compiler/clc/mesa_clc"       "$PWD/build-host/src/compiler/clc/mesa-clc"
+          ln -sf "$PWD/build-host/src/compiler/spirv/vtn_bindgen2" "$PWD/build-host/src/compiler/spirv/vtn-bindgen2"
+          ln -sf "$PWD/build-host/src/panfrost/clc/panfrost_compile" "$PWD/build-host/src/panfrost/clc/panfrost-compile"
 
-          # Fix #3 — src/poly/meson.build
-          sed -i "s|^[[:space:]]*subdir('cl')[[:space:]]*$|# Termux: poly cl subdir disabled (PanVK uses no CLC)|" \
-            src/poly/meson.build
+          echo "$PWD/build-host/src/compiler/clc"   >> $GITHUB_PATH
+          echo "$PWD/build-host/src/compiler/spirv" >> $GITHUB_PATH
+          echo "$PWD/build-host/src/panfrost/clc"   >> $GITHUB_PATH
 
-          # Fix #4 — src/poly/nir/meson.build
-          sed -i "1i if not is_variable('idep_libpoly')\n  idep_libpoly = declare_dependency()\nendif\n" \
-            src/poly/nir/meson.build
-
-          # Fix #5 — src/panfrost/meson.build
-          sed -i "s|^[[:space:]]*subdir('clc')[[:space:]]*$|# Termux: panfrost clc subdir disabled (PanVK uses no CLC)|" \
-            src/panfrost/meson.build
-
-          echo "=== vtn_bindgen2 ==="
-          sed -n '/prog_vtn_bindgen2 = executable/,/^   )/p' src/compiler/spirv/meson.build || true
-          echo "=== with_driver_using_cl ==="
-          grep -n "with_driver_using_cl" meson.build || true
-          echo "=== src/poly/meson.build ==="
-          cat src/poly/meson.build
-          echo "=== src/panfrost/meson.build ==="
-          grep -n "subdir" src/panfrost/meson.build || true
-
-      - name: Create Meson cross file
+      - name: Verify host tools on PATH
         run: |
-          cat > ~/cross_file.txt <<EOF
-          [binaries]
-          c       = '/usr/local/bin/android-cross-cc'
-          cpp     = '/usr/local/bin/android-cross-cxx'
-          ar      = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
-          strip   = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
-          pkg-config = 'termux-pkg-config'
-          exe_wrapper = 'qemu-aarch64-static'
+          ls -la ~/mesa-panvk/build-host/src/compiler/clc/mesa-clc
+          ls -la ~/mesa-panvk/build-host/src/compiler/spirv/vtn-bindgen2
+          ls -la ~/mesa-panvk/build-host/src/panfrost/clc/panfrost-compile
+          command -v mesa-clc
+          command -v vtn-bindgen2
 
-          [properties]
-          needs_exe_wrapper = true
+      # ------------------------------------------------------------------
+      # STEP 2 — Create pkg-config shims.
+      #
+      # These are minimal .pc stubs that pkg-config uses to satisfy the
+      # cross build's dependency('foo') calls without pulling in host
+      # paths. The actual libraries come from the Termux sysroot via -L.
+      # ------------------------------------------------------------------
+      - name: Create pkg-config shims
+        run: |
+          cd ~/mesa-panvk
+          mkdir -p shims
+
+          # Empty librt.a so the linker does not complain on Bionic.
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
+            cr shims/librt.a
+
+          # Core X11 / DRM shims
+          cat > shims/xrandr.pc << 'EOF'
+          Name: xrandr
+          Description: xrandr
+          Version: 1.15
+          Libs: -lXrandr
+          Cflags:
+          EOF
+
+          cat > shims/libdrm.pc << 'EOF'
+          Name: libdrm
+          Description: libdrm
+          Version: 2.5
+          Libs: -ldrm
+          Cflags:
+          EOF
+
+          cat > shims/libx11-xcb.pc << 'EOF'
+          Name: libx11-xcb
+          Description: libx11-xcb
+          Version: 2.5
+          Libs: -lX11-xcb
+          Cflags:
+          EOF
+
+          # Android graphics / hidl shims (won't be linked if not needed)
+          cat > shims/android.hardware.graphics.mapper.pc << 'EOF'
+          Name: android.hardware.graphics.mapper
+          Description: android.hardware.graphics.mapper
+          Version: 4.0
+          Libs: -landroid.hardware.graphics.mapper
+          Cflags:
+          EOF
+
+          # Generic shims for the rest
+          for lib in xcb xcb-randr xcb-dri3 xcb-present xcb-shm xcb-sync \
+                     xshmfence xcb-xfixes gralloctypes hidlbase utils cutils \
+                     hardware log sync nativewindow ui; do
+            cat > shims/$lib.pc << EOF
+          Name: $lib
+          Description: $lib
+          Version: 1.15
+          Libs: -l$lib
+          Cflags:
+          EOF
+          done
+
+          ls -1 shims/
+
+      # ------------------------------------------------------------------
+      # STEP 3 — Create the Meson cross file.
+      # ------------------------------------------------------------------
+      - name: Create android.toml
+        run: |
+          cat > ~/mesa-panvk/android.toml << 'EOF'
+          [binaries]
+          c     = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang'
+          cpp   = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++'
+          ar    = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
+          strip = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
 
           [host_machine]
-          system     = 'linux'
+          system     = 'android'
           cpu_family = 'aarch64'
           cpu        = 'aarch64'
           endian     = 'little'
 
-          [built-in options]
-          c_args     = ['-I/data/data/com.termux/files/usr/include']
-          cpp_args   = ['-I/data/data/com.termux/files/usr/include']
-          c_link_args   = ['-L/data/data/com.termux/files/usr/lib']
-          cpp_link_args = ['-L/data/data/com.termux/files/usr/lib']
-          EOF
-          cat ~/cross_file.txt
+          [properties]
+          needs_exe_wrapper = true
 
-      - name: Configure cross build
+          [built-in options]
+          c_args     = ['-I$MESON_WORKING_DIR/shims', '-I/data/data/com.termux/files/usr/include']
+          cpp_args   = ['-I$MESON_WORKING_DIR/shims', '-I/data/data/com.termux/files/usr/include']
+          c_link_args   = ['-L/data/data/com.termux/files/usr/lib', '-L$MESON_WORKING_DIR/shims']
+          cpp_link_args = ['-L/data/data/com.termux/files/usr/lib', '-L$MESON_WORKING_DIR/shims']
+          EOF
+          cat ~/mesa-panvk/android.toml
+
+      - name: Generate cross file with envsubst
+        run: |
+          export MESON_WORKING_DIR="$HOME/mesa-panvk"
+          export ANDROID_NDK_HOME="$ANDROID_NDK_HOME"
+          envsubst < ~/mesa-panvk/android.toml > /tmp/android_wrapper.toml
+          cat /tmp/android_wrapper.toml
+
+      # ------------------------------------------------------------------
+      # STEP 4 — Minimal safety patches.
+      #
+      # With mesa-clc=system and precomp-compiler=system, most of the
+      # fork's CLC-related build paths are short-circuited by Meson. Only
+      # the driver-list fix and the poly NIR fallback are still needed.
+      # ------------------------------------------------------------------
+      - name: Apply minimal patches
         run: |
           cd ~/mesa-panvk
-          meson setup build \
-            --cross-file ~/cross_file.txt \
+
+          # Fork wrongly lists with_panfrost_vk in with_driver_using_cl.
+          sed -i \
+            "s|with_gallium_panfrost, with_panfrost_vk,|with_gallium_panfrost,|" \
+            meson.build
+
+          # src/poly/nir uses idep_libpoly normally defined by poly/cl.
+          sed -i "1i if not is_variable('idep_libpoly')\n  idep_libpoly = declare_dependency()\nendif\n" \
+            src/poly/nir/meson.build
+
+          echo "=== with_driver_using_cl ==="
+          grep -n "with_driver_using_cl" meson.build || true
+          echo "=== src/poly/nir/meson.build head ==="
+          head -5 src/poly/nir/meson.build
+
+      # ------------------------------------------------------------------
+      # STEP 5 — Cross configure and build.
+      # ------------------------------------------------------------------
+      - name: Configure cross build
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-panvk/shims
+        run: |
+          cd ~/mesa-panvk
+          meson setup build --reconfigure \
+            --cross-file /tmp/android_wrapper.toml \
             -Dbuildtype=${{ matrix.build-type }} \
-            -Dvulkan-drivers=panfrost \
-            -Dgallium-drivers= \
-            -Dpanfrost-kmds=kbase,panthor \
-            -Dpanvk-use-kbase=true \
-            -Dplatforms=x11 \
+            -Dplatforms=android,x11 \
+            -Dandroid-stub=true \
+            -Dandroid-libbacktrace=disabled \
+            -Dplatform-sdk-version=30 \
             -Dglx=disabled \
             -Dgbm=disabled \
             -Degl=disabled \
@@ -229,27 +285,30 @@ jobs:
             -Dgles2=disabled \
             -Dglvnd=disabled \
             -Dvalgrind=disabled \
-            -Dbuild-tests=false \
+            -Dgallium-drivers= \
+            -Dshared-glapi=disabled \
+            -Dzstd=disabled \
+            -Dmesa-clc=system \
+            -Dprecomp-compiler=system \
+            -Dvulkan-drivers=panfrost \
+            -Dllvm=disabled \
+            -Dstrip=false \
+            -Dpanfrost-kmds=kbase,panthor \
+            -Dpanvk-use-kbase=true \
             -Dlibunwind=disabled \
             -Dperfetto=false \
-            -Dprefix=/data/data/com.termux/files/usr \
             -Dc_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem" \
             -Dcpp_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem"
-
-      - name: Dump compiler invocations on failure
-        if: failure()
-        run: |
-          echo "=== cc invocations (last 50) ==="
-          tail -50 /tmp/cc-invocations.log 2>/dev/null || true
-          echo "=== cxx invocations (last 50) ==="
-          tail -50 /tmp/cxx-invocations.log 2>/dev/null || true
-          echo "=== meson log (last 200) ==="
-          tail -200 ~/mesa-panvk/build/meson-logs/meson-log.txt 2>/dev/null || true
 
       - name: Build PanVK shared library
         run: |
           cd ~/mesa-panvk
           ninja -C build -j$(nproc) src/panfrost/vulkan/libvulkan_panfrost.so
+
+      - name: Dump meson log on failure
+        if: failure()
+        run: |
+          tail -300 ~/mesa-panvk/build/meson-logs/meson-log.txt 2>/dev/null || true
 
       - name: Package artifacts
         run: |
