@@ -91,9 +91,6 @@ jobs:
           echo "=== libudev references ==="
           grep -n "libudev" meson.build || true
 
-      # ------------------------------------------------------------------
-      # STEP 1 — Build host tools natively on the x86_64 runner.
-      # ------------------------------------------------------------------
       - name: Build host tools
         run: |
           cd ~/mesa-panvk
@@ -129,9 +126,6 @@ jobs:
           command -v mesa-clc
           command -v vtn-bindgen2
 
-      # ------------------------------------------------------------------
-      # STEP 2 — Create pkg-config shims.
-      # ------------------------------------------------------------------
       - name: Create pkg-config shims
         run: |
           cd ~/mesa-panvk
@@ -140,6 +134,7 @@ jobs:
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
             cr shims/librt.a
 
+          # Real pkg-config module names that Mesa asks for.
           cat > shims/xrandr.pc << 'EOF'
           Name: xrandr
           Description: xrandr
@@ -151,16 +146,48 @@ jobs:
           cat > shims/libdrm.pc << 'EOF'
           Name: libdrm
           Description: libdrm
-          Version: 2.5
+          Version: 2.4
           Libs: -ldrm
           Cflags:
           EOF
 
-          cat > shims/libx11-xcb.pc << 'EOF'
-          Name: libx11-xcb
-          Description: libx11-xcb
-          Version: 2.5
+          cat > shims/x11-xcb.pc << 'EOF'
+          Name: x11-xcb
+          Description: x11-xcb
+          Version: 1.6
           Libs: -lX11-xcb
+          Cflags:
+          EOF
+
+          cat > shims/xcb-keysyms.pc << 'EOF'
+          Name: xcb-keysyms
+          Description: xcb-keysyms
+          Version: 0.4
+          Libs: -lxcb-keysyms
+          Cflags:
+          EOF
+
+          cat > shims/xcb-icccm.pc << 'EOF'
+          Name: xcb-icccm
+          Description: xcb-icccm
+          Version: 0.4
+          Libs: -lxcb-icccm
+          Cflags:
+          EOF
+
+          cat > shims/xcb-image.pc << 'EOF'
+          Name: xcb-image
+          Description: xcb-image
+          Version: 0.4
+          Libs: -lxcb-image
+          Cflags:
+          EOF
+
+          cat > shims/xcb-util.pc << 'EOF'
+          Name: xcb-util
+          Description: xcb-util
+          Version: 0.4
+          Libs: -lxcb-util
           Cflags:
           EOF
 
@@ -188,18 +215,11 @@ jobs:
 
       - name: Verify shims work
         run: |
-          echo "--- pkg-config sees: ---"
-          PKG_CONFIG_LIBDIR=$HOME/mesa-panvk/shims /usr/bin/pkg-config --libs --cflags libdrm
-          PKG_CONFIG_LIBDIR=$HOME/mesa-panvk/shims /usr/bin/pkg-config --libs --cflags xcb
-          PKG_CONFIG_LIBDIR=$HOME/mesa-panvk/shims /usr/bin/pkg-config --libs --cflags xrandr
+          for m in libdrm xcb xcb-randr x11-xcb xcb-keysyms xrandr xshmfence; do
+            echo -n "$m: "
+            PKG_CONFIG_LIBDIR=$HOME/mesa-panvk/shims /usr/bin/pkg-config --libs $m || echo "MISSING"
+          done
 
-      # ------------------------------------------------------------------
-      # STEP 3 — Create the Meson cross file template.
-      #
-      # Includes pkg-config = '/usr/bin/pkg-config'. The shim directory
-      # is injected via PKG_CONFIG_LIBDIR on the configure step, so
-      # pkg-config only ever sees our shims.
-      # ------------------------------------------------------------------
       - name: Create android.toml
         run: |
           cat > ~/mesa-panvk/android.toml << 'EOF'
@@ -234,9 +254,6 @@ jobs:
           envsubst < ~/mesa-panvk/android.toml > /tmp/android_wrapper.toml
           cat /tmp/android_wrapper.toml
 
-      # ------------------------------------------------------------------
-      # STEP 4 — Minimal patches.
-      # ------------------------------------------------------------------
       - name: Apply minimal patches
         run: |
           cd ~/mesa-panvk
@@ -253,9 +270,6 @@ jobs:
           echo "=== src/poly/nir/meson.build head ==="
           head -5 src/poly/nir/meson.build
 
-      # ------------------------------------------------------------------
-      # STEP 5 — Cross configure and build.
-      # ------------------------------------------------------------------
       - name: Configure cross build
         env:
           PKG_CONFIG_LIBDIR: /home/runner/mesa-panvk/shims
