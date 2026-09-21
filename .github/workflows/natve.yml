@@ -161,8 +161,12 @@ jobs:
               # The fork scatters fprintf(stderr, "PANVKDBG ...") across
               # many files with no macro guard. Each call is a real
               # fprintf + write(2) syscall, killing runtime perf.
-              # Use a slurp-mode perl regex to remove the entire
-              # multi-line fprintf statement when it contains PANVKDBG.
+              # Slurp-mode perl regex removes the entire multi-line
+              # fprintf statement when it contains PANVKDBG.
+              #
+              # IMPORTANT: grep on "PANVKDBG" alone (not "fprintf.*PANVKDBG"),
+              # because in many files the fprintf and the format string live
+              # on separate lines and a line-based grep would miss them.
               echo "=============================================="
               echo "Stripping PANVKDBG debug fprintf calls ..."
               echo "=============================================="
@@ -170,7 +174,7 @@ jobs:
               BEFORE=$(grep -rc "PANVKDBG" src --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null | awk -F: "{s+=\$2} END {print s+0}")
               echo "PANVKDBG occurrences before: $BEFORE"
 
-              grep -rl "fprintf.*PANVKDBG" src \
+              grep -rl "PANVKDBG" src \
                    --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null \
               | xargs -r perl -0777 -pi -e \
                   "s{\bfprintf\s*\(\s*stderr\s*,(?:(?!\)\s*;).)*?PANVKDBG(?:(?!\)\s*;).)*?\)\s*;}{}gsx"
@@ -179,13 +183,12 @@ jobs:
               echo "PANVKDBG occurrences after:  $AFTER"
 
               if [[ "$AFTER" -gt 0 ]]; then
-                echo ">>> Remaining PANVKDBG references (should only be comments):"
+                echo ">>> Remaining PANVKDBG references (should be comments only):"
                 grep -rn "PANVKDBG" src --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null | head -20 || true
               else
                 echo ">>> All PANVKDBG fprintf calls removed."
               fi
 
-              # Sanity: make sure we did not accidentally rip out real code
               echo "--- diff stat after PANVKDBG strip ---"
               git --no-pager diff --stat || true
               echo "--------------------------------------"
