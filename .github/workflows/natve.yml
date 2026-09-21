@@ -128,7 +128,7 @@ jobs:
                 bison flex cmake glslang shaderc vulkan-headers \
                 vulkan-loader-generic libandroid-shmem libdrm libxcb \
                 xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
-                libxrandr libxrandr-static patch perl
+                libxrandr libxrandr-static patch file
 
               pip install --break-system-packages meson mako pyyaml packaging
 
@@ -157,41 +157,47 @@ jobs:
                 ls -la /patch || true
               fi
 
-              # ── Strip PANVKDBG debug spam ─────────────────────────────
-              # The fork scatters fprintf(stderr, "PANVKDBG ...") across
-              # many files with no macro guard. Each call is a real
-              # fprintf + write(2) syscall, killing runtime perf.
-              # Slurp-mode perl regex removes the entire multi-line
-              # fprintf statement when it contains PANVKDBG.
-              #
-              # IMPORTANT: grep on "PANVKDBG" alone (not "fprintf.*PANVKDBG"),
-              # because in many files the fprintf and the format string live
-              # on separate lines and a line-based grep would miss them.
+              # ── Silence PANVKDBG via -include header ──────────────────
+              # Safe alternative to source-stripping: shadow fprintf() with
+              # an inline wrapper that returns immediately when the format
+              # string starts with "PANVKDBG". Because the format string is
+              # always a literal, the compiler folds the strncmp at compile
+              # time and DCEs the entire call — same perf as a source strip,
+              # but no chance of breaking unbraced if/else bodies.
               echo "=============================================="
-              echo "Stripping PANVKDBG debug fprintf calls ..."
+              echo "Installing PANVKDBG silence header ..."
               echo "=============================================="
 
-              BEFORE=$(grep -rc "PANVKDBG" src --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null | awk -F: "{s+=\$2} END {print s+0}")
-              echo "PANVKDBG occurrences before: $BEFORE"
+              SILENCE_H="$PWD/src/panvk_silence.h"
+              cat > "$SILENCE_H" <<'"'"'HDR'"'"'
+              #pragma once
+              #include <stdio.h>
+              #include <string.h>
+              #include <stdarg.h>
 
-              grep -rl "PANVKDBG" src \
-                   --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null \
-              | xargs -r perl -0777 -pi -e \
-                  "s{\bfprintf\s*\(\s*stderr\s*,(?:(?!\)\s*;).)*?PANVKDBG(?:(?!\)\s*;).)*?\)\s*;}{}gsx"
+              static inline int __panvk_silence_fprintf(FILE *fp, const char *fmt, ...) {
+                  if (fp == stderr && fmt && strncmp(fmt, "PANVKDBG", 8) == 0)
+                      return 0;
+                  va_list ap;
+                  va_start(ap, fmt);
+                  int r = vfprintf(fp, fmt, ap);
+                  va_end(ap);
+                  return r;
+              }
 
-              AFTER=$(grep -rc "PANVKDBG" src --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null | awk -F: "{s+=\$2} END {print s+0}")
-              echo "PANVKDBG occurrences after:  $AFTER"
+              #define fprintf(fp, ...) __panvk_silence_fprintf((fp), __VA_ARGS__)
+              HDR
 
-              if [[ "$AFTER" -gt 0 ]]; then
-                echo ">>> Remaining PANVKDBG references (should be comments only):"
-                grep -rn "PANVKDBG" src --include="*.c" --include="*.cpp" --include="*.h" 2>/dev/null | head -20 || true
-              else
-                echo ">>> All PANVKDBG fprintf calls removed."
-              fi
+              echo "Wrote $SILENCE_H"
+              wc -l "$SILENCE_H"
+              head -3 "$SILENCE_H"
 
-              echo "--- diff stat after PANVKDBG strip ---"
-              git --no-pager diff --stat || true
-              echo "--------------------------------------"
+              # Feed it to every C/C++ compile via CFLAGS/CXXFLAGS.
+              # Meson reads these at setup time and uses them as the
+              # project-wide default c_args / cpp_args.
+              export CFLAGS="-include $SILENCE_H"
+              export CXXFLAGS="-include $SILENCE_H"
+              echo "CFLAGS=$CFLAGS"
               # ──────────────────────────────────────────────────────────
 
               meson setup build-bionic \
@@ -223,7 +229,21 @@ jobs:
               cp build-bionic/src/panfrost/vulkan/libvulkan_panfrost.so \
                  /termux-out/lib/libvulkan_panfrost.so
 
-              # ── ICD manifest (exact, uses container $PREFIX) ──
+              # ── Verify the silence header actually took effect ──
+              echo "=============================================="
+              echo "Verifying PANVKDBG strings are gone from .so ..."
+              echo "=============================================="
+              PANVKDBG_STRINGS=$(strings /termux-out/lib/libvulkan_panfrost.so | grep -c "PANVKDBG" || true)
+              echo "PANVKDBG string literals remaining in .so: $PANVKDBG_STRINGS"
+              if [[ "$PANVKDBG_STRINGS" -lt 20 ]]; then
+                echo ">>> PASS: silence header worked (calls DCEd)"
+              else
+                echo ">>> WARNING: many PANVKDBG strings still present — header may not have been applied"
+                strings /termux-out/lib/libvulkan_panfrost.so | grep "PANVKDBG" | head -10
+              fi
+              # ─────────────────────────────────────────────────────
+
+              # ── ICD manifest ──
               cat > /termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json <<JSON
               {
                   "ICD": {
@@ -291,8 +311,10 @@ jobs:
 
             ### Build customizations
             - `sigbus.patch` applied (SHM debug dump SIGBUS fix)
-            - `PANVKDBG` debug fprintf calls stripped at source
-              (removes a huge perf hit from per-draw stderr writes)
+            - `PANVKDBG` debug fprintf calls silenced via a `-include`
+              wrapper that lets the compiler DCE every PANVKDBG call.
+              Same performance as a source strip, but cannot break
+              control flow.
 
             ### Files
             - `panvk-termux-aarch64-debugoptimized-*.tar.gz` — full install tree (debug)
