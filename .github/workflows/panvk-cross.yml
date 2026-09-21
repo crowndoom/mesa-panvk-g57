@@ -93,11 +93,6 @@ jobs:
 
       # ------------------------------------------------------------------
       # STEP 1 — Build host tools natively on the x86_64 runner.
-      #
-      # These are consumed by the cross build via mesa-clc=system and
-      # precomp-compiler=system. Because they are built natively, no
-      # qemu-user-static, no exe_wrapper, and no compiler wrapper are
-      # needed anywhere. This is the same pattern as the reference.
       # ------------------------------------------------------------------
       - name: Build host tools
         run: |
@@ -118,10 +113,8 @@ jobs:
             src/compiler/spirv/vtn_bindgen2 \
             src/panfrost/clc/panfrost_compile
 
-          # Hyphenated aliases so Meson's find_program() finds them when
-          # mesa-clc=system and precomp-compiler=system are set.
-          ln -sf "$PWD/build-host/src/compiler/clc/mesa_clc"       "$PWD/build-host/src/compiler/clc/mesa-clc"
-          ln -sf "$PWD/build-host/src/compiler/spirv/vtn_bindgen2" "$PWD/build-host/src/compiler/spirv/vtn-bindgen2"
+          ln -sf "$PWD/build-host/src/compiler/clc/mesa_clc"         "$PWD/build-host/src/compiler/clc/mesa-clc"
+          ln -sf "$PWD/build-host/src/compiler/spirv/vtn_bindgen2"   "$PWD/build-host/src/compiler/spirv/vtn-bindgen2"
           ln -sf "$PWD/build-host/src/panfrost/clc/panfrost_compile" "$PWD/build-host/src/panfrost/clc/panfrost-compile"
 
           echo "$PWD/build-host/src/compiler/clc"   >> $GITHUB_PATH
@@ -138,21 +131,15 @@ jobs:
 
       # ------------------------------------------------------------------
       # STEP 2 — Create pkg-config shims.
-      #
-      # These are minimal .pc stubs that pkg-config uses to satisfy the
-      # cross build's dependency('foo') calls without pulling in host
-      # paths. The actual libraries come from the Termux sysroot via -L.
       # ------------------------------------------------------------------
       - name: Create pkg-config shims
         run: |
           cd ~/mesa-panvk
           mkdir -p shims
 
-          # Empty librt.a so the linker does not complain on Bionic.
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
             cr shims/librt.a
 
-          # Core X11 / DRM shims
           cat > shims/xrandr.pc << 'EOF'
           Name: xrandr
           Description: xrandr
@@ -177,7 +164,6 @@ jobs:
           Cflags:
           EOF
 
-          # Android graphics / hidl shims (won't be linked if not needed)
           cat > shims/android.hardware.graphics.mapper.pc << 'EOF'
           Name: android.hardware.graphics.mapper
           Description: android.hardware.graphics.mapper
@@ -186,7 +172,6 @@ jobs:
           Cflags:
           EOF
 
-          # Generic shims for the rest
           for lib in xcb xcb-randr xcb-dri3 xcb-present xcb-shm xcb-sync \
                      xshmfence xcb-xfixes gralloctypes hidlbase utils cutils \
                      hardware log sync nativewindow ui; do
@@ -201,17 +186,29 @@ jobs:
 
           ls -1 shims/
 
+      - name: Verify shims work
+        run: |
+          echo "--- pkg-config sees: ---"
+          PKG_CONFIG_LIBDIR=$HOME/mesa-panvk/shims /usr/bin/pkg-config --libs --cflags libdrm
+          PKG_CONFIG_LIBDIR=$HOME/mesa-panvk/shims /usr/bin/pkg-config --libs --cflags xcb
+          PKG_CONFIG_LIBDIR=$HOME/mesa-panvk/shims /usr/bin/pkg-config --libs --cflags xrandr
+
       # ------------------------------------------------------------------
-      # STEP 3 — Create the Meson cross file.
+      # STEP 3 — Create the Meson cross file template.
+      #
+      # Includes pkg-config = '/usr/bin/pkg-config'. The shim directory
+      # is injected via PKG_CONFIG_LIBDIR on the configure step, so
+      # pkg-config only ever sees our shims.
       # ------------------------------------------------------------------
       - name: Create android.toml
         run: |
           cat > ~/mesa-panvk/android.toml << 'EOF'
           [binaries]
-          c     = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang'
-          cpp   = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++'
-          ar    = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
-          strip = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
+          c          = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang'
+          cpp        = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++'
+          ar         = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
+          strip      = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
+          pkg-config = '/usr/bin/pkg-config'
 
           [host_machine]
           system     = 'android'
@@ -238,22 +235,16 @@ jobs:
           cat /tmp/android_wrapper.toml
 
       # ------------------------------------------------------------------
-      # STEP 4 — Minimal safety patches.
-      #
-      # With mesa-clc=system and precomp-compiler=system, most of the
-      # fork's CLC-related build paths are short-circuited by Meson. Only
-      # the driver-list fix and the poly NIR fallback are still needed.
+      # STEP 4 — Minimal patches.
       # ------------------------------------------------------------------
       - name: Apply minimal patches
         run: |
           cd ~/mesa-panvk
 
-          # Fork wrongly lists with_panfrost_vk in with_driver_using_cl.
           sed -i \
             "s|with_gallium_panfrost, with_panfrost_vk,|with_gallium_panfrost,|" \
             meson.build
 
-          # src/poly/nir uses idep_libpoly normally defined by poly/cl.
           sed -i "1i if not is_variable('idep_libpoly')\n  idep_libpoly = declare_dependency()\nendif\n" \
             src/poly/nir/meson.build
 
@@ -267,7 +258,7 @@ jobs:
       # ------------------------------------------------------------------
       - name: Configure cross build
         env:
-          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-panvk/shims
+          PKG_CONFIG_LIBDIR: /home/runner/mesa-panvk/shims
         run: |
           cd ~/mesa-panvk
           meson setup build --reconfigure \
