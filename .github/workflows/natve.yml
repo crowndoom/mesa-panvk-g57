@@ -155,7 +155,7 @@ jobs:
             bison flex cmake glslang shaderc vulkan-headers \
             vulkan-loader-generic libandroid-shmem libdrm libxcb \
             xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
-            libxrandr libxrandr-static libxxf86vm xorg-xrandr patch file
+            libxrandr libxrandr-static libxxf86vm xorg-xrandr patch file xcb-util-renderutil xcb-util-image xcb-util-keysyms xcb-util-wm xorg-xkbcomp xkeyboard-config
 
               pip install --break-system-packages meson mako pyyaml packaging setuptools
 
