@@ -149,15 +149,15 @@ jobs:
                   exit 1
                 fi
               done
-
+             pkg install x11-repo tur-repo -y
               pkg install -y \
-                git clang lld ninja python python-pip pkg-config \
-                bison flex cmake glslang shaderc vulkan-headers \
-                vulkan-loader-generic libandroid-shmem libdrm libxcb \
-                xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
-                libxrandr libxrandr-static patch file
+             git clang lld ninja python python-pip pkg-config \
+            bison flex cmake glslang shaderc vulkan-headers \
+            vulkan-loader-generic libandroid-shmem libdrm libxcb \
+            xorgproto libx11 libxshmfence zlib zstd libexpat libclc spirv-llvm-translator \
+            libxrandr libxrandr-static libxxf86vm xorg-xrandr patch file
 
-              pip install --break-system-packages meson mako pyyaml packaging
+              pip install --break-system-packages meson mako pyyaml packaging setuptools
 
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
