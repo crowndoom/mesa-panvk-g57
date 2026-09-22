@@ -212,14 +212,9 @@ jobs:
               meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
                 -Dvulkan-drivers=panfrost \
-                -Dgallium-drivers= \
-                -Dpanfrost-kmds=kbase,panthor \
+                -Dgallium-drivers=panfrost \
+                -Dpanfrost-kmds=kbase \
                 -Dplatforms=x11 \
-                -Dglx=disabled \
-                -Degl=disabled \
-                -Dopengl=false \
-                -Dgles1=disabled \
-                -Dgles2=disabled \
                 -Dbuild-tests=false \
                 -Dlibunwind=disabled \
                 -Dvalgrind=disabled \
