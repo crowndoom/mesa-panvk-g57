@@ -157,7 +157,7 @@ jobs:
                 glslang shaderc vulkan-headers vulkan-loader-generic vulkan-tools \
                 libclc spirv-llvm-translator zlib zstd libexpat \
                 libxrandr libxrandr-static mesa-demos osmesa glmark2 \
-                pulseaudio termux-x11-nightly patch file perl
+                pulseaudio termux-x11-nightly patch file perl mesa mesa-dev libglvnd-dev libglvnd
 
               pip install --break-system-packages meson mako pyyaml packaging setuptools
 
@@ -216,6 +216,7 @@ jobs:
                 -Dgallium-drivers=panfrost \
                 -Dpanfrost-kmds=kbase,panthor \
                 -Dplatforms=x11 \
+                -Dglvnd=enabled \
                 -Dbuild-tests=false \
                 -Dlibunwind=disabled \
                 -Dvalgrind=disabled \
