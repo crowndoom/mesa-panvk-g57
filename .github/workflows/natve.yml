@@ -233,15 +233,22 @@ jobs:
                 -Dc_link_args=-landroid-shmem \
                 -Dcpp_link_args=-landroid-shmem
 
-              # FIXED TARGET: Build the unified Gallium DRI module instead of a non-existent Panfrost-only target
-              ninja -C build-bionic -j$(nproc) \
-                src/gallium/targets/dri/libgallium_dri.so
+              # BUILD EVERYTHING: This avoids target name mismatches in this specific fork.
+              # It will build the Gallium DRI module along with everything else.
+              ninja -C build-bionic -j$(nproc)
 
               mkdir -p /termux-out/lib
 
-              # Copy the unified Gallium DRI module
-              cp build-bionic/src/gallium/targets/dri/libgallium_dri.so \
-                 /termux-out/lib/libgallium_dri.so
+              # Dynamically locate the built Gallium driver (handles different naming conventions)
+              GALLIUM_SO=$(find build-bionic -name "libgallium*.so" | head -n1)
+              if [[ -z "$GALLIUM_SO" ]]; then
+                echo "ERROR: libgallium*.so not found in build-bionic"
+                echo "Listing all .so files found:"
+                find build-bionic -name "*.so" | head -20
+                exit 1
+              fi
+              echo "Found driver: $GALLIUM_SO"
+              cp "$GALLIUM_SO" /termux-out/lib/libgallium_dri.so
 
               # ── Verify the silence header worked ──
               echo "=============================================="
