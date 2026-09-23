@@ -156,8 +156,8 @@ jobs:
                 libxcb libxcomposite libxcursor libxfixes libxrender \
                 glslang shaderc vulkan-headers vulkan-loader-generic vulkan-tools \
                 libclc spirv-llvm-translator zlib zstd libexpat \
-                libxrandr libxrandr-static mesa-demos osmesa glmark2 \
-                pulseaudio termux-x11-nightly patch file perl mesa mesa-dev libglvnd-dev libglvnd
+                libxrandr libxrandr-static mesa-demos osmesa \
+                pulseaudio termux-x11-nightly patch file perl mesa-dev libglvnd-dev libglvnd
 
               pip install --break-system-packages meson mako pyyaml packaging setuptools
 
