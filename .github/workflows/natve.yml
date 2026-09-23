@@ -132,25 +132,18 @@ jobs:
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
               export BUILD_TYPE="'"${{ matrix.build-type }}"'"
 
-              # Swap Aliyun for the official Termux mirror (Aliyun is often mid-sync)
+              # Swap Aliyun for the official Termux mirror
               mkdir -p "$PREFIX/etc/apt/sources.list.d"
               echo "deb https://packages.termux.dev/apt/termux-main stable main" \
                 > "$PREFIX/etc/apt/sources.list.d/termux-main.list"
 
-              # Retry pkg update a few times
               for i in 1 2 3; do
-                if pkg update -y; then
-                  break
-                fi
+                if pkg update -y; then break; fi
                 echo "pkg update attempt $i failed, retrying in 10s..."
                 sleep 10
-                if [[ $i -eq 3 ]]; then
-                  echo "pkg update failed after 3 attempts" >&2
-                  exit 1
-                fi
+                if [[ $i -eq 3 ]]; then echo "pkg update failed" >&2; exit 1; fi
               done
 
-              # Install repositories and all required dependencies
               pkg install x11-repo tur-repo -y
               pkg install -y \
                 git clang lld binutils cmake autoconf automake libtool make python python-pip ninja llvm bison flex pkg-config \
@@ -166,7 +159,6 @@ jobs:
                 libxrandr libxrandr-static mesa-demos osmesa glmark2 \
                 pulseaudio termux-x11-nightly patch file
 
-              # Install Python build dependencies (including setuptools to fix distutils)
               pip install --break-system-packages meson mako pyyaml packaging setuptools
 
               mkdir -p "$TMPDIR"
@@ -175,53 +167,43 @@ jobs:
               git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
               cd mesa-panvk
 
-              # ── Apply sigbus.patch from repo root (mounted at /patch) ──
               if [[ -f /patch/sigbus.patch ]]; then
-                echo "=============================================="
                 echo "Applying /patch/sigbus.patch ..."
-                echo "=============================================="
                 if git apply --verbose /patch/sigbus.patch; then
                   echo ">>> git apply succeeded"
                 else
                   echo ">>> git apply failed, falling back to patch(1)"
                   patch -p1 --batch --forward < /patch/sigbus.patch
                 fi
-                echo "--- patch applied, diff stat: ---"
                 git --no-pager diff --stat || true
-                echo "--- end of diff stat ---"
               else
-                echo "WARNING: /patch/sigbus.patch not found, building unpatched"
-                ls -la /patch || true
+                echo "WARNING: /patch/sigbus.patch not found"
               fi
-
-              # ── Install silence header (copied from host) ──
-              echo "=============================================="
-              echo "Installing silence header ..."
-              echo "=============================================="
 
               if [[ ! -f /patch/panvk_silence.h ]]; then
-                echo "ERROR: /patch/panvk_silence.h missing — host step did not run"
-                ls -la /patch || true
+                echo "ERROR: /patch/panvk_silence.h missing"
                 exit 1
               fi
-
               cp /patch/panvk_silence.h "$PWD/src/panvk_silence.h"
-              SILENCE_H="$PWD/src/panvk_silence.h"
-              echo "Installed at: $SILENCE_H"
-              wc -l "$SILENCE_H"
-              head -3 "$SILENCE_H"
+              export CFLAGS="-include $PWD/src/panvk_silence.h"
+              export CXXFLAGS="-include $PWD/src/panvk_silence.h"
 
-              export CFLAGS="-include $SILENCE_H"
-              export CXXFLAGS="-include $SILENCE_H"
-              echo "CFLAGS=$CFLAGS"
-              echo "CXXFLAGS=$CXXFLAGS"
-              # ──────────────────────────────────────────────────────────
+              # ── CRITICAL FIX: Patch pan_device.c to align pan_query_core_count API ──
+              echo "=============================================="
+              echo "Patching pan_device.c for new pan_query_core_count signature..."
+              echo "=============================================="
+              # Flatten the file so multi-line calls can be matched
+              sed -i ':a;N;$!ba;s/\n/ /g' src/gallium/drivers/panfrost/pan_device.c
+              # Replace the old two-argument call with the new single-argument calls
+              sed -i "s/dev->core_count[[:space:]]*=[[:space:]]*pan_query_core_count(&dev->kmod\.dev->props, &dev->core_id_range);/dev->core_count = pan_query_core_count(\&dev->kmod.dev->props);\n   dev->core_id_range = pan_query_core_id_range(\&dev->kmod.dev->props);/g" src/gallium/drivers/panfrost/pan_device.c
+              # Verify the patch
+              echo "--- Verification of pan_query_core calls: ---"
+              grep -n "pan_query_core" src/gallium/drivers/panfrost/pan_device.c
+              # ─────────────────────────────────────────────────────
 
-              # CRITICAL FIX: We are building the Gallium (OpenGL) driver.
-              # PanVK (Vulkan) requires the Panthor kernel driver, which is NOT available on Termux/Android (kbase).
               meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
-                -Dvulkan-drivers=panfrost \
+                -Dvulkan-drivers= \
                 -Dgallium-drivers=panfrost \
                 -Dpanfrost-kmds=kbase \
                 -Dplatforms=x11 \
@@ -233,40 +215,21 @@ jobs:
                 -Dc_link_args=-landroid-shmem \
                 -Dcpp_link_args=-landroid-shmem
 
-              # BUILD EVERYTHING: This avoids target name mismatches in this specific fork.
-              # It will build the Gallium DRI module along with everything else.
               ninja -C build-bionic -j$(nproc)
 
               mkdir -p /termux-out/lib
 
-              # Dynamically locate the built Gallium driver (handles different naming conventions)
               GALLIUM_SO=$(find build-bionic -name "libgallium*.so" | head -n1)
               if [[ -z "$GALLIUM_SO" ]]; then
-                echo "ERROR: libgallium*.so not found in build-bionic"
-                echo "Listing all .so files found:"
+                echo "ERROR: libgallium*.so not found"
                 find build-bionic -name "*.so" | head -20
                 exit 1
               fi
               echo "Found driver: $GALLIUM_SO"
               cp "$GALLIUM_SO" /termux-out/lib/libgallium_dri.so
 
-              # ── Verify the silence header worked ──
-              echo "=============================================="
-              echo "Verifying PANVKDBG strings are gone from .so ..."
-              echo "=============================================="
-              PANVKDBG_STRINGS=$(strings /termux-out/lib/libgallium_dri.so | grep -c "PANVKDBG" || true)
-              echo "PANVKDBG string literals remaining: $PANVKDBG_STRINGS"
-              if [[ "$PANVKDBG_STRINGS" -lt 20 ]]; then
-                echo ">>> PASS: silence header worked (calls DCEd)"
-              else
-                echo ">>> WARNING: many PANVKDBG strings still present"
-                strings /termux-out/lib/libgallium_dri.so | grep "PANVKDBG" | head -10 || true
-              fi
-              # ─────────────────────────────────────────────────────
-
               echo "=== /termux-out ==="
               find /termux-out -type f
-              echo "=== sizes ==="
               ls -lh /termux-out/lib/
             '
 
@@ -310,28 +273,20 @@ jobs:
 
             Built natively inside Termux (`termux/termux-docker:aarch64`)
             on `ubuntu-24.04-arm` — same toolchain class as an on-device
-            native Termux build (Termux Clang/LLD, target
-            `aarch64-linux-android35`).
+            native Termux build.
 
             **Build date (UTC):** `${{ needs.prepare.outputs.date }}`
             **Build time (UTC):** `${{ needs.prepare.outputs.time }}`
             **Commit:** `${{ github.sha }}`
-            **Build types:** `${{ needs.prepare.outputs.types }}`
 
             ### Build customizations
             - `sigbus.patch` applied (SHM debug dump SIGBUS fix)
-            - `PANVKDBG` debug fprintf calls silenced via a `-include`
-              wrapper — the compiler folds the check at compile time and
-              dead-code eliminates every PANVKDBG call site. Same runtime
-              performance as a source-level strip, no risk to control flow.
-            - **Note:** This builds the unified Gallium (OpenGL) DRI module (`libgallium_dri.so`). 
-              PanVK (Vulkan) is not built because it requires the Panthor kernel 
-              driver, which is incompatible with Android's `kbase` driver.
-
-            ### Files
-            - `panfrost-termux-aarch64-debugoptimized-*.tar.gz` — full install tree (debug)
-            - `panfrost-termux-aarch64-release-*.tar.gz` — full install tree (release)
-            - `libgallium_dri.so` — Unified OpenGL DRI driver containing Panfrost (from the last-built variant)
+            - `PANVKDBG` debug fprintf calls silenced via a `-include` wrapper
+            - **Patched `pan_device.c`:** Fixed `pan_query_core_count` API mismatch
+              in `panfrost_open_device_kbase`
+            - **Note:** Builds the unified Gallium (OpenGL) DRI module. PanVK (Vulkan)
+              is not built because it requires the Panthor kernel driver, which is
+              incompatible with Android's `kbase` driver.
 
             ### Install (Termux)
             ```bash
