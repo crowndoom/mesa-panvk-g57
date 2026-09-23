@@ -118,8 +118,6 @@ jobs:
       - name: Verify libdrm headers are present
         run: |
           set -euo pipefail
-          # xf86drm.h and xf86drmMode.h live directly in /usr/include
-          # drm.h and drm_mode.h live in /usr/include/libdrm
           MISSING=0
           for h in /usr/include/xf86drm.h /usr/include/xf86drmMode.h /usr/include/libdrm/drm.h; do
             if [[ ! -f "$h" ]]; then
@@ -159,6 +157,26 @@ jobs:
           sed -i \
             's/#if defined(HAVE_MEMFD_CREATE) \&\& !defined __TERMUX__/#if defined(HAVE_MEMFD_CREATE)/' \
             src/util/anon_file.c || true
+
+      - name: Stage libdrm headers into a non-standard include dir
+        run: |
+          set -euo pipefail
+          # meson strips -I/usr/include* from pkg-config Cflags because it
+          # assumes those are already searched. Under the NDK they are NOT.
+          # Copy the headers into a plain workspace dir so the path survives
+          # meson's filtering and so we never put /usr/include on the
+          # cross-compile search path (which would shadow bionic headers).
+          DEST="$GITHUB_WORKSPACE/mesa-src/drm-include"
+          mkdir -p "$DEST"
+          cp /usr/include/xf86drm.h     "$DEST/"
+          cp /usr/include/xf86drmMode.h "$DEST/"
+          cp /usr/include/libdrm/*.h    "$DEST/"
+          cp -r /usr/include/libdrm/nouveau "$DEST/" 2>/dev/null || true
+
+          echo "==== $DEST ===="
+          ls -la "$DEST"
+          echo "---- xf86drm.h head ----"
+          head -n 30 "$DEST/xf86drm.h"
 
       - name: Build host tools (mesa_clc, vtn_bindgen2, panfrost_compile)
         working-directory: mesa-src
@@ -206,14 +224,13 @@ jobs:
             exit 1
           fi
 
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
           mkdir -p shims
 
           # glibc 2.34+ merged librt into libc. Provide an empty archive so
           # `-lrt` link checks pass under the Android toolchain.
           "$TOOLCHAIN/bin/llvm-ar" cr shims/librt.a
 
-          # Explicit shims for deps mesa asks for by a *specific* name that
-          # does NOT match the linker -l flag.
           cat > shims/x11-xcb.pc <<'EOF'
           Name: x11-xcb
           Description: x11-xcb (Android shim)
@@ -230,16 +247,15 @@ jobs:
           Cflags:
           EOF
 
-          # libdrm: provide both the linker flag AND the header include paths.
-          # - xf86drm.h and xf86drmMode.h are in /usr/include
-          # - drm.h, drm_mode.h, etc. are in /usr/include/libdrm
-          # Both include paths are needed.
-          cat > shims/libdrm.pc <<'EOF'
+          # libdrm: point at our staged copy, NOT /usr/include (meson would
+          # strip that, and it would shadow bionic). Non-standard workspace
+          # paths survive meson's pkg-config filtering.
+          cat > shims/libdrm.pc <<EOF
           Name: libdrm
           Description: libdrm (Android shim)
           Version: 2.5
           Libs: -ldrm
-          Cflags: -I/usr/include/libdrm -I/usr/include
+          Cflags: -I${MESON_WORKING_DIR}/drm-include
           EOF
 
           cat > shims/android.hardware.graphics.mapper.pc <<'EOF'
@@ -250,8 +266,6 @@ jobs:
           Cflags:
           EOF
 
-          # Bulk shims: every name mesa's meson.build may query. `-l$lib` is
-          # the conventional linker flag for each.
           for lib in \
               xcb xcb-randr xcb-dri2 xcb-dri3 xcb-present xcb-shm xcb-sync \
               xcb-xfixes xcb-keysyms xcb-shape xcb-render xcb-renderutil \
@@ -275,8 +289,10 @@ jobs:
           cat shims/libdrm.pc
           echo "==== x11-xcb.pc ===="
           cat shims/x11-xcb.pc
-          echo "==== librt.a ===="
-          file shims/librt.a || ls -lh shims/librt.a
+
+          echo "==== verify pkg-config sees libdrm with the include path ===="
+          PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags libdrm
+          echo "(that should print -I$MESON_WORKING_DIR/drm-include)"
 
       - name: Generate Android cross file
         working-directory: mesa-src
@@ -313,6 +329,8 @@ jobs:
           needs_exe_wrapper = true
 
           [built-in options]
+          c_args        = ['-I${MESON_WORKING_DIR}/drm-include']
+          cpp_args      = ['-I${MESON_WORKING_DIR}/drm-include']
           c_link_args   = ['-L${MESON_WORKING_DIR}/shims']
           cpp_link_args = ['-L${MESON_WORKING_DIR}/shims']
           EOF
@@ -331,7 +349,11 @@ jobs:
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
           export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
 
-          meson setup build --reconfigure \
+          # Force a clean configure — the build dir may carry stale
+          # dependency caches from a previous run.
+          rm -rf build
+
+          meson setup build \
               --cross-file /tmp/android_wrapper.toml \
               -Dbuildtype=${{ matrix.build-type }} \
               -Dplatforms=android,x11 \
@@ -355,6 +377,24 @@ jobs:
               -Dllvm=disabled \
               -Dstrip=false \
               -Dpanfrost-kmds=kbase,panthor
+
+      - name: Verify drm-include is on the compile command line
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+          # Sanity check: confirm meson picked up -I.../drm-include. We grep
+          # the generated build.ninja which will fail loudly if the Cflag
+          # was dropped.
+          if grep -q "$GITHUB_WORKSPACE/mesa-src/drm-include" build/build.ninja; then
+            echo "OK: drm-include IS on the compile line"
+            grep -m1 "drm-include" build/build.ninja | head -c 400
+            echo
+          else
+            echo "ERROR: drm-include is NOT in build.ninja"
+            echo "---- search for -I paths in build.ninja ----"
+            grep -o '\-I[^ ]*' build/build.ninja | sort -u | head -40
+            exit 1
+          fi
 
       - name: Compile libvulkan_panfrost.so
         working-directory: mesa-src
