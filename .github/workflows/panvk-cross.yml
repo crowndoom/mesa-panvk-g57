@@ -1,233 +1,199 @@
-name: Cross PANVK (host tools + shims)
+name: Build PanVK for cross (aarch64, cross-compile via Android NDK)
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type"
+        type: choice
+        required: true
+        default: both
+        options:
+          - both
+          - debugoptimized
+          - release
+      release_tag:
+        description: "Tag to create (leave empty to auto-generate)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    outputs:
+      date:  ${{ steps.ts.outputs.date }}
+      time:  ${{ steps.ts.outputs.time }}
+      stamp: ${{ steps.ts.outputs.stamp }}
+      tag:   ${{ steps.ts.outputs.tag }}
+      types: ${{ steps.ts.outputs.types }}
+    steps:
+      - name: Compute build timestamp and tag
+        id: ts
+        run: |
+          DATE=$(date -u +'%Y-%m-%d')
+          TIME=$(date -u +'%H%M%S')
+          STAMP="${DATE}-${TIME}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "date=$DATE"           >> "$GITHUB_OUTPUT"
+          echo "time=$TIME"           >> "$GITHUB_OUTPUT"
+          echo "stamp=$STAMP"         >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
 
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          else
+            TAG="build-${DATE}-${TIME}-${SHORT_SHA}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          CHOICE="${{ github.event.inputs.build_type }}"
+          case "$CHOICE" in
+            release)        TYPES='["release"]' ;;
+            debugoptimized) TYPES='["debugoptimized"]' ;;
+            *)              TYPES='["debugoptimized","release"]' ;;
+          esac
+          echo "types=$TYPES" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        build-type: [debugoptimized, release]
+        build-type: ${{ fromJSON(needs.prepare.outputs.types) }}
 
     steps:
-      - name: Checkout
+      - name: Checkout (for sigbus.patch)
         uses: actions/checkout@v4
 
-      - name: Install host build tools
-        run: |
-          sudo apt update
-          sudo apt install -y ninja-build pkg-config python3-mako python3-pip \
-            glslang-tools flex bison curl ca-certificates patch unzip wget \
-            file build-essential \
-            llvm-20-dev libclang-20-dev libclc-20-dev libllvmspirvlib-20-dev \
-            libelf-dev spirv-tools libdrm-dev
-          pip install --user meson mako pyyaml packaging ply
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Download Android NDK
-        run: |
-          NDK_VERSION="r29"
-          wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
-          unzip -q "android-ndk-${NDK_VERSION}-linux.zip" -d /opt
-          echo "ANDROID_NDK_HOME=/opt/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
-
-      - name: Setup Termux sysroot
+      - name: Verify sigbus.patch exists at repo root
         run: |
           set -euo pipefail
-          mkdir -p termux && cd termux
-          wget -q https://github.com/xodiosx/Wine-arm64ce/releases/download/wine-14/termux-rootfs.tar
-          tar xf termux-rootfs.tar
-          sudo mv data /data
-          sudo chown -R $(whoami):$(whoami) /data
-          sudo chmod -R a+rX /data/data/com.termux/files/usr
-          mkdir -p /data/data/com.termux/files/usr/tmp
+          PATCH="${{ github.workspace }}/sigbus.patch"
+          if [[ ! -f "$PATCH" ]]; then
+            echo "ERROR: sigbus.patch not found at repo root ($PATCH)"
+            ls -la "${{ github.workspace }}"
+            exit 1
+          fi
+          echo "Found patch:"
+          ls -lh "$PATCH"
+          echo "--- first 30 lines ---"
+          head -n 30 "$PATCH"
 
-      - name: Install PanVK runtime deps into Termux sysroot
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              build-essential \
+              llvm-dev \
+              libclang-dev \
+              libclc-dev \
+              libelf-dev \
+              spirv-tools \
+              bison \
+              flex \
+              libdrm-dev \
+              pkg-config \
+              ninja-build \
+              patch
+          python -m pip install --upgrade pip
+          pip install mako PyYAML meson ninja packaging
+
+      - name: Clone mesa-panvk-g57 and apply sigbus.patch
         run: |
           set -euo pipefail
-          cd /tmp
-          rm -rf panvk-debs && mkdir panvk-debs && cd panvk-debs
-          BASE="https://packages.termux.dev/apt/termux-main"
-          for pkg in libdrm libandroid-shmem libclc spirv-tools \
-                     spirv-llvm-translator libxcb xorgproto libx11 libxshmfence \
-                     libxrandr libxext libxfixes libxxf86vm \
-                     zlib zstd libexpat; do
-            wget -q -r -l1 -np -nH --cut-dirs=0 \
-              --accept-regex "${pkg}_.*_aarch64\.deb|${pkg}_.*_all\.deb" \
-              "${BASE}/pool/main/${pkg:0:1}/${pkg}/" -P . || true
-          done
-          find . -name '*.deb' -print -exec dpkg-deb -x {} /tmp/panvk-debs/rootfs/ \;
-          sudo cp -rn /tmp/panvk-debs/rootfs/data/data/com.termux/files/usr/. \
-                       /data/data/com.termux/files/usr/ || true
-          sudo chmod -R a+rX /data/data/com.termux/files/usr/lib
+          cd "$GITHUB_WORKSPACE"
+          rm -rf mesa-src
+          git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-src
+          cd mesa-src
 
-      - name: Provide libatomic to NDK sysroot
+          echo "=============================================="
+          echo "Applying sigbus.patch from repo root"
+          echo "=============================================="
+          if git apply --verbose "$GITHUB_WORKSPACE/sigbus.patch"; then
+            echo ">>> git apply succeeded"
+          else
+            echo ">>> git apply failed, falling back to patch(1)"
+            patch -p1 --batch --forward < "$GITHUB_WORKSPACE/sigbus.patch"
+          fi
+          git --no-pager diff --stat || true
+
+          # memfd_create: NDK API 30+ has it natively, drop the __TERMUX__ guard
+          sed -i \
+            's/#if defined(HAVE_MEMFD_CREATE) \&\& !defined __TERMUX__/#if defined(HAVE_MEMFD_CREATE)/' \
+            src/util/anon_file.c || true
+
+      - name: Build host tools (mesa_clc, vtn_bindgen2, panfrost_compile)
+        working-directory: mesa-src
         run: |
           set -euo pipefail
-          NDK_SYSROOT_LIB="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
-          SRC=$(find "$ANDROID_NDK_HOME" -name 'libclang_rt.builtins-aarch64-android.a' -print -quit)
-          [ -n "$SRC" ] || { echo "no builtins archive found"; exit 1; }
-          sudo cp "$SRC" "$NDK_SYSROOT_LIB/libatomic.a"
-          sudo chmod 644 "$NDK_SYSROOT_LIB/libatomic.a"
-
-      - name: Clone Mesa PanVK fork
-        run: git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git ~/mesa-panvk
-
-      - name: Strip libudev from Mesa
-        run: |
-          cd ~/mesa-panvk
-          sed -i -E "s/dependency\('libudev'[^)]*\)/dependency('libudev', required : false, disabler : true)/g" meson.build
-          sed -i "s/has_header('libudev.h')/false/g" meson.build
-          echo "=== libudev references ==="
-          grep -n "libudev" meson.build || true
-
-      - name: Build host tools
-        run: |
-          cd ~/mesa-panvk
           meson setup build-host \
-            -Dplatforms=[] \
-            -Dgallium-drivers=[] \
-            -Dvulkan-drivers=[] \
-            -Dtools=panfrost \
-            -Dprecomp-compiler=enabled \
-            -Dinstall-precomp-compiler=true \
-            -Dllvm=enabled \
-            -Dmesa-clc=enabled \
-            -Dinstall-mesa-clc=true
+              -Dplatforms=[] \
+              -Dgallium-drivers=[] \
+              -Dvulkan-drivers=[] \
+              -Dtools=panfrost \
+              -Dprecomp-compiler=enabled \
+              -Dinstall-precomp-compiler=true \
+              -Dllvm=enabled \
+              -Dmesa-clc=enabled -Dinstall-mesa-clc=true
 
           ninja -C build-host \
             src/compiler/clc/mesa_clc \
             src/compiler/spirv/vtn_bindgen2 \
             src/panfrost/clc/panfrost_compile
 
-          ln -sf "$PWD/build-host/src/compiler/clc/mesa_clc"         "$PWD/build-host/src/compiler/clc/mesa-clc"
-          ln -sf "$PWD/build-host/src/compiler/spirv/vtn_bindgen2"   "$PWD/build-host/src/compiler/spirv/vtn-bindgen2"
-          ln -sf "$PWD/build-host/src/panfrost/clc/panfrost_compile" "$PWD/build-host/src/panfrost/clc/panfrost-compile"
+          ln -sf "build-host/src/compiler/clc/mesa_clc"       "build-host/src/compiler/clc/mesa-clc"
+          ln -sf "build-host/src/compiler/spirv/vtn_bindgen2" "build-host/src/compiler/spirv/vtn-bindgen2"
 
-          echo "$PWD/build-host/src/compiler/clc"   >> $GITHUB_PATH
-          echo "$PWD/build-host/src/compiler/spirv" >> $GITHUB_PATH
-          echo "$PWD/build-host/src/panfrost/clc"   >> $GITHUB_PATH
+          echo "==== Host tools built ===="
+          ls -lh build-host/src/compiler/clc/mesa_clc
+          ls -lh build-host/src/compiler/spirv/vtn_bindgen2
+          ls -lh build-host/src/panfrost/clc/panfrost_compile
 
-      - name: Verify host tools on PATH
+      - name: Generate Android cross file
+        working-directory: mesa-src
         run: |
-          ls -la ~/mesa-panvk/build-host/src/compiler/clc/mesa-clc
-          ls -la ~/mesa-panvk/build-host/src/compiler/spirv/vtn-bindgen2
-          ls -la ~/mesa-panvk/build-host/src/panfrost/clc/panfrost-compile
-          command -v mesa-clc
-          command -v vtn-bindgen2
+          set -euo pipefail
 
-      - name: Create pkg-config shims
-        run: |
-          cd ~/mesa-panvk
-          mkdir -p shims
+          # Resolve NDK path. GitHub's ubuntu-latest image ships the NDK and
+          # exports ANDROID_NDK_LATEST_HOME. Fall back to scanning the sdk dir.
+          if [[ -n "${ANDROID_NDK_LATEST_HOME:-}" && -d "$ANDROID_NDK_LATEST_HOME" ]]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          else
+            NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
 
-          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" \
-            cr shims/librt.a
+          if [[ ! -d "$TOOLCHAIN" ]]; then
+            echo "ERROR: NDK toolchain not found at $TOOLCHAIN"
+            echo "ANDROID_NDK_LATEST_HOME=${ANDROID_NDK_LATEST_HOME:-<unset>}"
+            ls -la /usr/local/lib/android/sdk/ndk 2>/dev/null || true
+            exit 1
+          fi
 
-          cat > shims/xrandr.pc << 'EOF'
-          Name: xrandr
-          Description: xrandr
-          Version: 1.15
-          Libs: -lXrandr
-          Cflags:
-          EOF
-
-          cat > shims/libdrm.pc << 'EOF'
-          Name: libdrm
-          Description: libdrm
-          Version: 2.4.109
-          Libs: -ldrm
-          Cflags:
-          EOF
-
-          cat > shims/x11-xcb.pc << 'EOF'
-          Name: x11-xcb
-          Description: x11-xcb
-          Version: 1.6
-          Libs: -lX11-xcb
-          Cflags:
-          EOF
-
-          cat > shims/xcb-keysyms.pc << 'EOF'
-          Name: xcb-keysyms
-          Description: xcb-keysyms
-          Version: 0.4
-          Libs: -lxcb-keysyms
-          Cflags:
-          EOF
-
-          cat > shims/xcb-icccm.pc << 'EOF'
-          Name: xcb-icccm
-          Description: xcb-icccm
-          Version: 0.4
-          Libs: -lxcb-icccm
-          Cflags:
-          EOF
-
-          cat > shims/xcb-image.pc << 'EOF'
-          Name: xcb-image
-          Description: xcb-image
-          Version: 0.4
-          Libs: -lxcb-image
-          Cflags:
-          EOF
-
-          cat > shims/xcb-util.pc << 'EOF'
-          Name: xcb-util
-          Description: xcb-util
-          Version: 0.4
-          Libs: -lxcb-util
-          Cflags:
-          EOF
-
-          cat > shims/android.hardware.graphics.mapper.pc << 'EOF'
-          Name: android.hardware.graphics.mapper
-          Description: android.hardware.graphics.mapper
-          Version: 4.0
-          Libs: -landroid.hardware.graphics.mapper
-          Cflags:
-          EOF
-
-          for lib in xcb xcb-randr xcb-dri3 xcb-present xcb-shm xcb-sync \
-                     xshmfence xcb-xfixes gralloctypes hidlbase utils cutils \
-                     hardware log sync nativewindow ui; do
-            cat > shims/$lib.pc << EOF
-          Name: $lib
-          Description: $lib
-          Version: 1.15
-          Libs: -l$lib
-          Cflags:
-          EOF
-          done
-
-          ls -1 shims/
-
-      - name: Verify shims work
-        run: |
-          for m in libdrm xcb xcb-randr x11-xcb xcb-keysyms xrandr xshmfence; do
-            echo -n "$m: "
-            PKG_CONFIG_LIBDIR=$HOME/mesa-panvk/shims /usr/bin/pkg-config --libs $m || echo "MISSING"
-          done
-
-      - name: Create android.toml
-        run: |
-          cat > ~/mesa-panvk/android.toml << 'EOF'
+          API=30   # Android 11 — minimum for aarch64 memfd_create + Vulkan 1.1+
+          cat > android-cross.txt <<EOF
           [binaries]
-          c          = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang'
-          cpp        = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++'
-          ar         = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar'
-          strip      = '$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip'
-          pkg-config = '/usr/bin/pkg-config'
+          c         = '$TOOLCHAIN/bin/aarch64-linux-android${API}-clang'
+          cpp       = '$TOOLCHAIN/bin/aarch64-linux-android${API}-clang++'
+          ar        = '$TOOLCHAIN/bin/llvm-ar'
+          strip     = '$TOOLCHAIN/bin/llvm-strip'
+          ld        = '$TOOLCHAIN/bin/ld.lld'
+          pkgconfig = 'pkg-config'
 
           [host_machine]
           system     = 'android'
@@ -237,104 +203,142 @@ jobs:
 
           [properties]
           needs_exe_wrapper = true
-
-          [built-in options]
-          c_args     = ['-I$MESON_WORKING_DIR/shims', '-I/data/data/com.termux/files/usr/include']
-          cpp_args   = ['-I$MESON_WORKING_DIR/shims', '-I/data/data/com.termux/files/usr/include']
-          c_link_args   = ['-L/data/data/com.termux/files/usr/lib', '-L$MESON_WORKING_DIR/shims']
-          cpp_link_args = ['-L/data/data/com.termux/files/usr/lib', '-L$MESON_WORKING_DIR/shims']
           EOF
-          cat ~/mesa-panvk/android.toml
 
-      - name: Generate cross file with envsubst
+          echo "==== android-cross.txt ===="
+          cat android-cross.txt
+
+      - name: Configure meson (cross-compile, Winlator target)
+        working-directory: mesa-src
         run: |
-          export MESON_WORKING_DIR="$HOME/mesa-panvk"
-          export ANDROID_NDK_HOME="$ANDROID_NDK_HOME"
-          envsubst < ~/mesa-panvk/android.toml > /tmp/android_wrapper.toml
-          cat /tmp/android_wrapper.toml
+          set -euo pipefail
+          HOST_TOOLS_CLC="$GITHUB_WORKSPACE/mesa-src/build-host/src/compiler/clc"
+          HOST_TOOLS_SPIRV="$GITHUB_WORKSPACE/mesa-src/build-host/src/compiler/spirv"
+          HOST_TOOLS_PANFROST="$GITHUB_WORKSPACE/mesa-src/build-host/src/panfrost/clc"
+          export PATH="$HOST_TOOLS_CLC:$HOST_TOOLS_SPIRV:$HOST_TOOLS_PANFROST:$PATH"
 
-      - name: Apply minimal patches
-        run: |
-          cd ~/mesa-panvk
-
-          sed -i \
-            "s|with_gallium_panfrost, with_panfrost_vk,|with_gallium_panfrost,|" \
-            meson.build
-
-          sed -i "1i if not is_variable('idep_libpoly')\n  idep_libpoly = declare_dependency()\nendif\n" \
-            src/poly/nir/meson.build
-
-          echo "=== with_driver_using_cl ==="
-          grep -n "with_driver_using_cl" meson.build || true
-          echo "=== src/poly/nir/meson.build head ==="
-          head -5 src/poly/nir/meson.build
-
-      - name: Configure cross build
-        env:
-          PKG_CONFIG_LIBDIR: /home/runner/mesa-panvk/shims
-        run: |
-          cd ~/mesa-panvk
           meson setup build --reconfigure \
-            --cross-file /tmp/android_wrapper.toml \
-            -Dbuildtype=${{ matrix.build-type }} \
-            -Dplatforms=android,x11 \
-            -Dandroid-stub=true \
-            -Dandroid-libbacktrace=disabled \
-            -Dplatform-sdk-version=30 \
-            -Dglx=disabled \
-            -Dgbm=disabled \
-            -Degl=disabled \
-            -Dopengl=false \
-            -Dgles1=disabled \
-            -Dgles2=disabled \
-            -Dglvnd=disabled \
-            -Dvalgrind=disabled \
-            -Dgallium-drivers= \
-            -Dshared-glapi=disabled \
-            -Dzstd=disabled \
-            -Dmesa-clc=system \
-            -Dprecomp-compiler=system \
-            -Dvulkan-drivers=panfrost \
-            -Dllvm=disabled \
-            -Dstrip=false \
-            -Dpanfrost-kmds=kbase,panthor \
-            -Dpanvk-use-kbase=true \
-            -Dlibunwind=disabled \
-            -Dperfetto=false \
-            -Dc_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem" \
-            -Dcpp_link_args="-L/data/data/com.termux/files/usr/lib -landroid-shmem"
+              --cross-file android-cross.txt \
+              -Dbuildtype=${{ matrix.build-type }} \
+              -Dplatforms=android,x11 \
+              -Dandroid-stub=true \
+              -Dandroid-libbacktrace=disabled \
+              -Dplatform-sdk-version=30 \
+              -Dglx=disabled \
+              -Dgbm=disabled \
+              -Degl=disabled \
+              -Dopengl=false \
+              -Dgles1=disabled \
+              -Dgles2=disabled \
+              -Dglvnd=disabled \
+              -Dvalgrind=disabled \
+              -Dgallium-drivers= \
+              -Dshared-glapi=disabled \
+              -Dzstd=disabled \
+              -Dmesa-clc=system \
+              -Dprecomp-compiler=system \
+              -Dvulkan-drivers=panfrost \
+              -Dllvm=disabled \
+              -Dpanfrost-kmds=kbase,panthor
 
-      - name: Build PanVK shared library
+      - name: Compile libvulkan_panfrost.so
+        working-directory: mesa-src
         run: |
-          cd ~/mesa-panvk
-          ninja -C build -j$(nproc) src/panfrost/vulkan/libvulkan_panfrost.so
+          set -euo pipefail
+          HOST_TOOLS_CLC="$GITHUB_WORKSPACE/mesa-src/build-host/src/compiler/clc"
+          HOST_TOOLS_SPIRV="$GITHUB_WORKSPACE/mesa-src/build-host/src/compiler/spirv"
+          HOST_TOOLS_PANFROST="$GITHUB_WORKSPACE/mesa-src/build-host/src/panfrost/clc"
+          export PATH="$HOST_TOOLS_CLC:$HOST_TOOLS_SPIRV:$HOST_TOOLS_PANFROST:$PATH"
 
-      - name: Dump meson log on failure
-        if: failure()
-        run: |
-          tail -300 ~/mesa-panvk/build/meson-logs/meson-log.txt 2>/dev/null || true
+          ninja -C build src/panfrost/vulkan/libvulkan_panfrost.so
 
-      - name: Package artifacts
+      - name: Package tarball (${{ matrix.build-type }})
         run: |
-          mkdir -p panvk_out/lib panvk_out/share/vulkan/icd.d
-          find ~/mesa-panvk/build -name "libvulkan_panfrost*.so" -exec cp {} panvk_out/lib/ \;
-          find ~/mesa-panvk/build -name "panfrost_icd*.json"   -exec cp {} panvk_out/share/vulkan/icd.d/ \; || true
-          tar -cJf panvk-aarch64-${{ matrix.build-type }}.tar.xz -C panvk_out .
-          ls -lh panvk-aarch64-*.tar.xz
+          set -euo pipefail
+          OUT="winlator-out-${{ matrix.build-type }}"
+          mkdir -p "$OUT/lib" "$OUT/share/vulkan/icd.d"
+
+          cp mesa-src/build/src/panfrost/vulkan/libvulkan_panfrost.so "$OUT/lib/"
+
+          # ICD manifest for Winlator. Uses a bare library name so it resolves
+          # via LD_LIBRARY_PATH inside the container.
+          cat > "$OUT/share/vulkan/icd.d/panfrost_icd.aarch64.json" <<'JSON'
+          {
+              "file_format_version": "1.0.1",
+              "ICD": {
+                  "library_path": "libvulkan_panfrost.so",
+                  "api_version": "1.4.354",
+                  "library_arch": "64"
+              }
+          }
+          JSON
+
+          echo "==== ICD ===="
+          cat "$OUT/share/vulkan/icd.d/panfrost_icd.aarch64.json"
+          echo "==== output tree ===="
+          find "$OUT" -type f
+
+          TARBALL="panvk-winlator-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz"
+          tar -czvf "$TARBALL" -C "$OUT" .
+          ls -lh "$TARBALL"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: panvk-aarch64-${{ matrix.build-type }}
-          path: panvk-aarch64-${{ matrix.build-type }}.tar.xz
+          name: panvk-winlator-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}
+          path: |
+            winlator-out-${{ matrix.build-type }}/
+            panvk-winlator-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: find artifacts -type f
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: panvk-aarch64-${{ matrix.build-type }}.tar.xz
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: "${{ needs.prepare.outputs.tag }} — PanVK Winlator build ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }} UTC"
+          body: |
+            ## PanVK for Winlator (aarch64, cross-compile via Android NDK)
+
+            Cross-compiled on `ubuntu-latest` (x86_64) using the Android NDK
+            toolchain (`aarch64-linux-android30-clang`), targeting the
+            Android ABI used by Winlator and similar Android Linux containers.
+
+            **Build date (UTC):** `${{ needs.prepare.outputs.date }}`
+            **Build time (UTC):** `${{ needs.prepare.outputs.time }}`
+            **Commit:** `${{ github.sha }}`
+            **Build types:** `${{ needs.prepare.outputs.types }}`
+
+            ### Files
+            - `panvk-winlator-aarch64-debugoptimized-*.tar.gz`
+            - `panvk-winlator-aarch64-release-*.tar.gz`
+            - `libvulkan_panfrost.so` — Vulkan driver
+            - `panfrost_icd.aarch64.json` — ICD manifest
+
+            ### Install (Winlator / Android container)
+            ```bash
+            tar -xzf panvk-winlator-aarch64-release-*.tar.gz -C /path/to/rootfs
+            export VK_ICD_FILENAMES=/path/to/rootfs/share/vulkan/icd.d/panfrost_icd.aarch64.json
+            export LD_LIBRARY_PATH=/path/to/rootfs/lib:$LD_LIBRARY_PATH
+            ```
+          files: |
+            artifacts/*.tar.gz
+            artifacts/**/libvulkan_panfrost.so
+            artifacts/**/panfrost_icd.aarch64.json
+          overwrite_files: true
           generate_release_notes: true
           prerelease: true
-          tag_name: ${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
