@@ -188,7 +188,7 @@ jobs:
               export CFLAGS="-include $PWD/src/panvk_silence.h"
               export CXXFLAGS="-include $PWD/src/panvk_silence.h"
 
-              # ── CRITICAL FIX: Patch pan_device.c using Perl for multi-line matching ──
+              # ── CRITICAL FIX: Patch pan_device.c using Perl with double quotes ──
               echo "=============================================="
               echo "Patching pan_device.c for new pan_query_core_count signature..."
               echo "=============================================="
@@ -200,11 +200,10 @@ jobs:
               fi
               echo "Found pan_device.c at: $PAN_DEVICE_C"
 
-              # Use perl -0777 to slurp the whole file, allowing multi-line regex matching.
-              # This handles the case where the function call is split across multiple lines.
-              perl -0777 -pi -e '
-                s/dev->core_count\s*=\s*pan_query_core_count\(&dev->kmod\.dev->props,\s*&dev->core_id_range\);/dev->core_count = pan_query_core_count(\&dev->kmod.dev->props);\n   dev->core_id_range = pan_query_core_id_range(\&dev->kmod.dev->props);/g;
-              ' "$PAN_DEVICE_C"
+              # Use perl -0777 to slurp the whole file (multi-line regex support).
+              # The -e argument uses DOUBLE quotes to avoid terminating the outer
+              # single-quoted bash -c string. No $ variables inside, so no expansion issues.
+              perl -0777 -pi -e "s/dev->core_count\s*=\s*pan_query_core_count\(&dev->kmod\.dev->props,\s*&dev->core_id_range\);/dev->core_count = pan_query_core_count(&dev->kmod.dev->props);\n   dev->core_id_range = pan_query_core_id_range(&dev->kmod.dev->props);/g;" "$PAN_DEVICE_C"
 
               # Verify the patch
               echo "--- Verification of pan_query_core calls: ---"
