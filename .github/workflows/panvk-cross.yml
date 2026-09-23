@@ -110,7 +110,8 @@ jobs:
               libdrm-dev \
               pkg-config \
               ninja-build \
-              patch
+              patch \
+              gettext
           python -m pip install --upgrade pip
           pip install mako PyYAML meson ninja packaging
 
@@ -159,11 +160,95 @@ jobs:
 
           ln -sf "build-host/src/compiler/clc/mesa_clc"       "build-host/src/compiler/clc/mesa-clc"
           ln -sf "build-host/src/compiler/spirv/vtn_bindgen2" "build-host/src/compiler/spirv/vtn-bindgen2"
+          ln -sf "build-host/src/panfrost/clc/panfrost_compile" \
+                 "build-host/src/compiler/spirv/panfrost-compile"
 
           echo "==== Host tools built ===="
           ls -lh build-host/src/compiler/clc/mesa_clc
           ls -lh build-host/src/compiler/spirv/vtn_bindgen2
           ls -lh build-host/src/panfrost/clc/panfrost_compile
+
+      - name: Generate pkg-config shims for Android
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${ANDROID_NDK_LATEST_HOME:-}" && -d "$ANDROID_NDK_LATEST_HOME" ]]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          else
+            NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export MESON_WORKING_DIR
+
+          if [[ ! -d "$TOOLCHAIN" ]]; then
+            echo "ERROR: NDK toolchain not found at $TOOLCHAIN"
+            exit 1
+          fi
+
+          mkdir -p shims
+
+          # glibc 2.34+ merged librt into libc. Provide an empty archive so
+          # `-lrt` link checks pass under the Android toolchain.
+          "$TOOLCHAIN/bin/llvm-ar" cr shims/librt.a
+
+          # Named shims with real -l<lib> entries (required so that anything
+          # linking against these libs finds the symbols)
+          cat > shims/xrandr.pc <<'EOF'
+          Name: xrandr
+          Description: xrandr
+          Version: 1.15
+          Libs: -lXrandr
+          Cflags:
+          EOF
+
+          cat > shims/libdrm.pc <<'EOF'
+          Name: libdrm
+          Description: libdrm
+          Version: 2.5
+          Libs: -ldrm
+          Cflags:
+          EOF
+
+          cat > shims/libx11-xcb.pc <<'EOF'
+          Name: libx11-xcb
+          Description: libx11-xcb
+          Version: 2.5
+          Libs: -lX11-xcb
+          Cflags:
+          EOF
+
+          cat > shims/android.hardware.graphics.mapper.pc <<'EOF'
+          Name: android.hardware.graphics.mapper
+          Description: android.hardware.graphics.mapper
+          Version: 4.0
+          Libs: -landroid.hardware.graphics.mapper
+          Cflags:
+          EOF
+
+          # Bulk shims — same pattern the official Mesa Android CI uses
+          for lib in \
+              xcb xcb-randr xcb-dri3 xcb-present xcb-shm xcb-sync \
+              xshmfence xcb-xfixes gralloctypes hidlbase utils cutils \
+              hardware log sync nativewindow ui
+          do
+            cat > "shims/$lib.pc" <<EOF
+          Name: $lib
+          Description: $lib
+          Version: 1.15
+          Libs: -l$lib
+          Cflags:
+          EOF
+          done
+
+          echo "==== shims directory ===="
+          ls -la shims
+          echo "==== samples ===="
+          echo "--- shims/xcb.pc ---"
+          cat shims/xcb.pc
+          echo "--- shims/librt.a ---"
+          file shims/librt.a || ls -lh shims/librt.a
 
       - name: Generate Android cross file
         working-directory: mesa-src
@@ -176,23 +261,22 @@ jobs:
             NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
           fi
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-
-          if [[ ! -d "$TOOLCHAIN" ]]; then
-            echo "ERROR: NDK toolchain not found at $TOOLCHAIN"
-            echo "ANDROID_NDK_LATEST_HOME=${ANDROID_NDK_LATEST_HOME:-<unset>}"
-            ls -la /usr/local/lib/android/sdk/ndk 2>/dev/null || true
-            exit 1
-          fi
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export MESON_WORKING_DIR
 
           API=30
-          cat > android-cross.txt <<EOF
+
+          # Template mirroring the shape of the upstream android.toml.
+          # envsubst expands $MESON_WORKING_DIR and $ANDROID_NDK_HOME, same
+          # as your local snippet.
+          cat > android.toml <<EOF
           [binaries]
-          c         = '$TOOLCHAIN/bin/aarch64-linux-android${API}-clang'
-          cpp       = '$TOOLCHAIN/bin/aarch64-linux-android${API}-clang++'
-          ar        = '$TOOLCHAIN/bin/llvm-ar'
-          strip     = '$TOOLCHAIN/bin/llvm-strip'
-          ld        = '$TOOLCHAIN/bin/ld.lld'
-          pkgconfig = 'pkg-config'
+          c         = '${TOOLCHAIN}/bin/aarch64-linux-android${API}-clang'
+          cpp       = '${TOOLCHAIN}/bin/aarch64-linux-android${API}-clang++'
+          ar        = '${TOOLCHAIN}/bin/llvm-ar'
+          strip     = '${TOOLCHAIN}/bin/llvm-strip'
+          ld        = '${TOOLCHAIN}/bin/ld.lld'
+          pkgconfig = '/usr/bin/pkg-config'
 
           [host_machine]
           system     = 'android'
@@ -202,22 +286,29 @@ jobs:
 
           [properties]
           needs_exe_wrapper = true
+
+          [built-in options]
+          c_link_args   = ['-L${MESON_WORKING_DIR}/shims']
+          cpp_link_args = ['-L${MESON_WORKING_DIR}/shims']
           EOF
 
-          echo "==== android-cross.txt ===="
-          cat android-cross.txt
+          export ANDROID_NDK_HOME="$NDK"
+          envsubst < android.toml > /tmp/android_wrapper.toml
+
+          echo "==== /tmp/android_wrapper.toml ===="
+          cat /tmp/android_wrapper.toml
 
       - name: Configure meson (cross-compile, Winlator target)
         working-directory: mesa-src
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
         run: |
           set -euo pipefail
-          HOST_TOOLS_CLC="$GITHUB_WORKSPACE/mesa-src/build-host/src/compiler/clc"
-          HOST_TOOLS_SPIRV="$GITHUB_WORKSPACE/mesa-src/build-host/src/compiler/spirv"
-          HOST_TOOLS_PANFROST="$GITHUB_WORKSPACE/mesa-src/build-host/src/panfrost/clc"
-          export PATH="$HOST_TOOLS_CLC:$HOST_TOOLS_SPIRV:$HOST_TOOLS_PANFROST:$PATH"
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
 
           meson setup build --reconfigure \
-              --cross-file android-cross.txt \
+              --cross-file /tmp/android_wrapper.toml \
               -Dbuildtype=${{ matrix.build-type }} \
               -Dplatforms=android,x11 \
               -Dandroid-stub=true \
@@ -238,16 +329,17 @@ jobs:
               -Dprecomp-compiler=system \
               -Dvulkan-drivers=panfrost \
               -Dllvm=disabled \
+              -Dstrip=false \
               -Dpanfrost-kmds=kbase,panthor
 
       - name: Compile libvulkan_panfrost.so
         working-directory: mesa-src
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
         run: |
           set -euo pipefail
-          HOST_TOOLS_CLC="$GITHUB_WORKSPACE/mesa-src/build-host/src/compiler/clc"
-          HOST_TOOLS_SPIRV="$GITHUB_WORKSPACE/mesa-src/build-host/src/compiler/spirv"
-          HOST_TOOLS_PANFROST="$GITHUB_WORKSPACE/mesa-src/build-host/src/panfrost/clc"
-          export PATH="$HOST_TOOLS_CLC:$HOST_TOOLS_SPIRV:$HOST_TOOLS_PANFROST:$PATH"
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
 
           ninja -C build src/panfrost/vulkan/libvulkan_panfrost.so
 
