@@ -188,31 +188,48 @@ jobs:
               export CFLAGS="-include $PWD/src/panvk_silence.h"
               export CXXFLAGS="-include $PWD/src/panvk_silence.h"
 
-              # ── CRITICAL FIX: Patch pan_device.c to align pan_query_core_count API ──
+              # ── CRITICAL FIX: Patch pan_device.c using Python for reliability ──
               echo "=============================================="
               echo "Patching pan_device.c for new pan_query_core_count signature..."
               echo "=============================================="
 
-              # Dynamically locate pan_device.c to avoid path mismatches
-              PAN_DEVICE_C=src/gallium/drivers/panfrost/pan_device.c
-              if [[ -z "$PAN_DEVICE_C" ]]; then
-                echo "ERROR: Could not find pan_device.c under src/gallium/drivers/"
-                echo "Searching whole repo for pan_device.c:"
-                find . -name "pan_device.c"
-                exit 1
-              fi
-              echo "Found pan_device.c at: $PAN_DEVICE_C"
+              python3 - <<'PYEOF'
+              import sys, os, re
 
-              # Flatten the file so multi-line function calls are matched correctly
-              sed -i ':a;N;$!ba;s/\n/ /g' "$PAN_DEVICE_C"
+              filepath = 'src/gallium/drivers/panfrost/pan_device.c'
+              print(f"Checking for {filepath}...")
+              if not os.path.exists(filepath):
+                  print(f"ERROR: {filepath} does not exist!")
+                  print("Current working directory:", os.getcwd())
+                  print("Files in src/gallium/drivers/panfrost:")
+                  try:
+                      print(os.listdir('src/gallium/drivers/panfrost'))
+                  except Exception as e:
+                      print("Could not list directory:", e)
+                  sys.exit(1)
 
-              # Replace the old two-argument call with the new single-argument calls.
-              # Using | as delimiter to avoid escaping /.
-              sed -i "s|pan_query_core_count(&dev->kmod\.dev->props, &dev->core_id_range)|pan_query_core_count(\&dev->kmod.dev->props); dev->core_id_range = pan_query_core_id_range(\&dev->kmod.dev->props)|g" "$PAN_DEVICE_C"
+              with open(filepath, 'r') as f:
+                  content = f.read()
 
-              # Verify the patch
-              echo "--- Verification of pan_query_core calls: ---"
-              grep -o "pan_query_core_[a-z_]*([^;]*)" "$PAN_DEVICE_C" | head -n 10
+              # Regex to match the old two-argument call (handles multi-line and whitespace variations)
+              pattern = re.compile(r'dev->core_count\s*=\s*pan_query_core_count\(&dev->kmod\.dev->props,\s*&dev->core_id_range\);')
+              
+              # The corrected single-argument calls
+              new_call = "dev->core_count = pan_query_core_count(&dev->kmod.dev->props);\n   dev->core_id_range = pan_query_core_id_range(&dev->kmod.dev->props);"
+              
+              new_content, count = pattern.subn(new_call, content)
+              if count == 0:
+                  print("ERROR: Could not find the old pan_query_core_count call in the file.")
+                  print("Here are the lines containing 'pan_query_core_count':")
+                  for i, line in enumerate(content.splitlines()):
+                      if 'pan_query_core_count' in line:
+                          print(f"Line {i+1}: {line}")
+                  sys.exit(1)
+
+              with open(filepath, 'w') as f:
+                  f.write(new_content)
+              print(f"Successfully patched {count} occurrence(s) of pan_query_core_count.")
+              PYEOF
               # ─────────────────────────────────────────────────────
 
               meson setup build-bionic \
