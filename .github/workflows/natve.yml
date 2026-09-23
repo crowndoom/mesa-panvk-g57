@@ -188,7 +188,7 @@ jobs:
               export CFLAGS="-include $PWD/src/panvk_silence.h"
               export CXXFLAGS="-include $PWD/src/panvk_silence.h"
 
-              # ── CRITICAL FIX: Patch pan_device.c using Perl with double quotes ──
+              # ── CRITICAL FIX: Patch pan_device.c using Perl ──
               echo "=============================================="
               echo "Patching pan_device.c for new pan_query_core_count signature..."
               echo "=============================================="
@@ -200,21 +200,21 @@ jobs:
               fi
               echo "Found pan_device.c at: $PAN_DEVICE_C"
 
-              # Use perl -0777 to slurp the whole file (multi-line regex support).
-              # The -e argument uses DOUBLE quotes to avoid terminating the outer
-              # single-quoted bash -c string. No $ variables inside, so no expansion issues.
               perl -0777 -pi -e "s/dev->core_count\s*=\s*pan_query_core_count\(&dev->kmod\.dev->props,\s*&dev->core_id_range\);/dev->core_count = pan_query_core_count(&dev->kmod.dev->props);\n   dev->core_id_range = pan_query_core_id_range(&dev->kmod.dev->props);/g;" "$PAN_DEVICE_C"
 
-              # Verify the patch
               echo "--- Verification of pan_query_core calls: ---"
               grep -n "pan_query_core" "$PAN_DEVICE_C" | head -n 10
               # ─────────────────────────────────────────────────────
 
+              # CRITICAL FIX: Build BOTH kbase AND panthor kmods.
+              # The CSF code in pan_csf.c unconditionally references panthor_kmod_* symbols,
+              # even when only kbase is used at runtime. Building both provides the
+              # missing symbols at link time. Runtime guard still prevents GL on kbase.
               meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
-                -Dvulkan-drivers= \
+                -Dvulkan-drivers=panfrost \
                 -Dgallium-drivers=panfrost \
-                -Dpanfrost-kmds=kbase \
+                -Dpanfrost-kmds=kbase,panthor \
                 -Dplatforms=x11 \
                 -Dbuild-tests=false \
                 -Dlibunwind=disabled \
@@ -292,10 +292,9 @@ jobs:
             - `sigbus.patch` applied (SHM debug dump SIGBUS fix)
             - `PANVKDBG` debug fprintf calls silenced via a `-include` wrapper
             - **Patched `pan_device.c`:** Fixed `pan_query_core_count` API mismatch
-              in `panfrost_open_device_kbase`
-            - **Note:** Builds the unified Gallium (OpenGL) DRI module. PanVK (Vulkan)
-              is not built because it requires the Panthor kernel driver, which is
-              incompatible with Android's `kbase` driver.
+            - **Built with `kbase,panthor` kmods:** Resolved undefined `panthor_kmod_*`
+              symbols referenced by `pan_csf.c`
+            - **Note:** Builds the unified Gallium (OpenGL) DRI module.
 
             ### Install (Termux)
             ```bash
