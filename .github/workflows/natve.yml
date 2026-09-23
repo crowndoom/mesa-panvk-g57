@@ -157,7 +157,7 @@ jobs:
                 glslang shaderc vulkan-headers vulkan-loader-generic vulkan-tools \
                 libclc spirv-llvm-translator zlib zstd libexpat \
                 libxrandr libxrandr-static mesa-demos osmesa glmark2 \
-                pulseaudio termux-x11-nightly patch file
+                pulseaudio termux-x11-nightly patch file perl
 
               pip install --break-system-packages meson mako pyyaml packaging setuptools
 
@@ -188,28 +188,28 @@ jobs:
               export CFLAGS="-include $PWD/src/panvk_silence.h"
               export CXXFLAGS="-include $PWD/src/panvk_silence.h"
 
-              # ── CRITICAL FIX: Patch pan_device.c to align pan_query_core_count API ──
+              # ── CRITICAL FIX: Patch pan_device.c using Perl for multi-line matching ──
               echo "=============================================="
               echo "Patching pan_device.c for new pan_query_core_count signature..."
               echo "=============================================="
 
-              # Dynamically locate pan_device.c to avoid path mismatches
-              PAN_DEVICE_C=src/gallium/drivers/panfrost/pan_device.c
-              if [[ -z "$PAN_DEVICE_C" ]]; then
-                echo "ERROR: Could not find pan_device.c under src/gallium/drivers/"
-                echo "Searching whole repo for pan_device.c:"
-                find . -name "pan_device.c"
+              PAN_DEVICE_C="src/gallium/drivers/panfrost/pan_device.c"
+              if [[ ! -f "$PAN_DEVICE_C" ]]; then
+                echo "ERROR: $PAN_DEVICE_C does not exist!"
                 exit 1
               fi
               echo "Found pan_device.c at: $PAN_DEVICE_C"
 
-              # Flatten the file so multi-line function calls are matched correctly
-              sed -i 's#pan_query_core_count(&dev->kmod\.dev->props, &dev->core_id_range);#pan_query_core_count(\&dev->kmod.dev->props); dev->core_id_range = pan_query_core_id_range(\&dev->kmod.dev->props);#' "$PAN_DEVICE_C"
+              # Use perl -0777 to slurp the whole file, allowing multi-line regex matching.
+              # This handles the case where the function call is split across multiple lines.
+              perl -0777 -pi -e '
+                s/dev->core_count\s*=\s*pan_query_core_count\(&dev->kmod\.dev->props,\s*&dev->core_id_range\);/dev->core_count = pan_query_core_count(\&dev->kmod.dev->props);\n   dev->core_id_range = pan_query_core_id_range(\&dev->kmod.dev->props);/g;
+              ' "$PAN_DEVICE_C"
 
               # Verify the patch
               echo "--- Verification of pan_query_core calls: ---"
-              grep -o "pan_query_core_[a-z_]*([^;]*)" "$PAN_DEVICE_C" | head -n 10
-             # ─────────────────────────────────────────────────────
+              grep -n "pan_query_core" "$PAN_DEVICE_C" | head -n 10
+              # ─────────────────────────────────────────────────────
 
               meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
