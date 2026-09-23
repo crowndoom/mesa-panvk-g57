@@ -179,8 +179,6 @@ jobs:
             NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
           fi
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
-          export MESON_WORKING_DIR
 
           if [[ ! -d "$TOOLCHAIN" ]]; then
             echo "ERROR: NDK toolchain not found at $TOOLCHAIN"
@@ -193,11 +191,19 @@ jobs:
           # `-lrt` link checks pass under the Android toolchain.
           "$TOOLCHAIN/bin/llvm-ar" cr shims/librt.a
 
-          # Named shims with real -l<lib> entries (required so that anything
-          # linking against these libs finds the symbols)
+          # Explicit shims for deps mesa asks for by a *specific* name that
+          # does NOT match the linker -l flag.
+          cat > shims/x11-xcb.pc <<'EOF'
+          Name: x11-xcb
+          Description: x11-xcb (Android shim)
+          Version: 1.15
+          Libs: -lX11-xcb
+          Cflags:
+          EOF
+
           cat > shims/xrandr.pc <<'EOF'
           Name: xrandr
-          Description: xrandr
+          Description: xrandr (Android shim)
           Version: 1.15
           Libs: -lXrandr
           Cflags:
@@ -205,37 +211,33 @@ jobs:
 
           cat > shims/libdrm.pc <<'EOF'
           Name: libdrm
-          Description: libdrm
+          Description: libdrm (Android shim)
           Version: 2.5
           Libs: -ldrm
           Cflags:
           EOF
 
-          cat > shims/libx11-xcb.pc <<'EOF'
-          Name: libx11-xcb
-          Description: libx11-xcb
-          Version: 2.5
-          Libs: -lX11-xcb
-          Cflags:
-          EOF
-
           cat > shims/android.hardware.graphics.mapper.pc <<'EOF'
           Name: android.hardware.graphics.mapper
-          Description: android.hardware.graphics.mapper
+          Description: android.hardware.graphics.mapper (Android shim)
           Version: 4.0
           Libs: -landroid.hardware.graphics.mapper
           Cflags:
           EOF
 
-          # Bulk shims — same pattern the official Mesa Android CI uses
+          # Bulk shims: every name mesa's meson.build may query. `-l$lib` is
+          # the conventional linker flag for each.
           for lib in \
-              xcb xcb-randr xcb-dri3 xcb-present xcb-shm xcb-sync \
-              xshmfence xcb-xfixes gralloctypes hidlbase utils cutils \
-              hardware log sync nativewindow ui
+              xcb xcb-randr xcb-dri2 xcb-dri3 xcb-present xcb-shm xcb-sync \
+              xcb-xfixes xcb-keysyms xcb-shape xcb-render xcb-renderutil \
+              xcb-xkb xcb-icccm xcb-image xcb-util \
+              xshmfence \
+              gralloctypes hidlbase utils cutils hardware log sync \
+              nativewindow ui
           do
             cat > "shims/$lib.pc" <<EOF
           Name: $lib
-          Description: $lib
+          Description: $lib (Android shim)
           Version: 1.15
           Libs: -l$lib
           Cflags:
@@ -244,10 +246,11 @@ jobs:
 
           echo "==== shims directory ===="
           ls -la shims
-          echo "==== samples ===="
-          echo "--- shims/xcb.pc ---"
-          cat shims/xcb.pc
-          echo "--- shims/librt.a ---"
+          echo "==== x11-xcb.pc ===="
+          cat shims/x11-xcb.pc
+          echo "==== xcb-keysyms.pc ===="
+          cat shims/xcb-keysyms.pc
+          echo "==== librt.a ===="
           file shims/librt.a || ls -lh shims/librt.a
 
       - name: Generate Android cross file
@@ -262,13 +265,10 @@ jobs:
           fi
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
-          export MESON_WORKING_DIR
+          export MESON_WORKING_DIR ANDROID_NDK_HOME="$NDK"
 
           API=30
 
-          # Template mirroring the shape of the upstream android.toml.
-          # envsubst expands $MESON_WORKING_DIR and $ANDROID_NDK_HOME, same
-          # as your local snippet.
           cat > android.toml <<EOF
           [binaries]
           c         = '${TOOLCHAIN}/bin/aarch64-linux-android${API}-clang'
@@ -292,7 +292,6 @@ jobs:
           cpp_link_args = ['-L${MESON_WORKING_DIR}/shims']
           EOF
 
-          export ANDROID_NDK_HOME="$NDK"
           envsubst < android.toml > /tmp/android_wrapper.toml
 
           echo "==== /tmp/android_wrapper.toml ===="
