@@ -217,9 +217,8 @@ jobs:
               echo "CXXFLAGS=$CXXFLAGS"
               # ──────────────────────────────────────────────────────────
 
-              # CRITICAL FIX: We are building the Gallium (OpenGL) driver instead of Vulkan (PanVK).
-              # PanVK requires the Panthor kernel driver, which is NOT available on Termux/Android (kbase).
-              # Building PanVK with kbase will always fail at the linker stage.
+              # CRITICAL FIX: We are building the Gallium (OpenGL) driver.
+              # PanVK (Vulkan) requires the Panthor kernel driver, which is NOT available on Termux/Android (kbase).
               meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
                 -Dvulkan-drivers= \
@@ -234,28 +233,27 @@ jobs:
                 -Dc_link_args=-landroid-shmem \
                 -Dcpp_link_args=-landroid-shmem
 
-              # Build the Gallium driver instead of the Vulkan driver
+              # FIXED TARGET: Build the unified Gallium DRI module instead of a non-existent Panfrost-only target
               ninja -C build-bionic -j$(nproc) \
-                src/gallium/drivers/panfrost/libpanfrost_dri.so
+                src/gallium/targets/dri/libgallium_dri.so
 
               mkdir -p /termux-out/lib
-              mkdir -p /termux-out/share/vulkan/icd.d
 
-              # Copy the Gallium driver
-              cp build-bionic/src/gallium/drivers/panfrost/libpanfrost_dri.so \
-                 /termux-out/lib/libpanfrost_dri.so
+              # Copy the unified Gallium DRI module
+              cp build-bionic/src/gallium/targets/dri/libgallium_dri.so \
+                 /termux-out/lib/libgallium_dri.so
 
               # ── Verify the silence header worked ──
               echo "=============================================="
               echo "Verifying PANVKDBG strings are gone from .so ..."
               echo "=============================================="
-              PANVKDBG_STRINGS=$(strings /termux-out/lib/libpanfrost_dri.so | grep -c "PANVKDBG" || true)
+              PANVKDBG_STRINGS=$(strings /termux-out/lib/libgallium_dri.so | grep -c "PANVKDBG" || true)
               echo "PANVKDBG string literals remaining: $PANVKDBG_STRINGS"
               if [[ "$PANVKDBG_STRINGS" -lt 20 ]]; then
                 echo ">>> PASS: silence header worked (calls DCEd)"
               else
                 echo ">>> WARNING: many PANVKDBG strings still present"
-                strings /termux-out/lib/libpanfrost_dri.so | grep "PANVKDBG" | head -10 || true
+                strings /termux-out/lib/libgallium_dri.so | grep "PANVKDBG" | head -10 || true
               fi
               # ─────────────────────────────────────────────────────
 
@@ -319,14 +317,14 @@ jobs:
               wrapper — the compiler folds the check at compile time and
               dead-code eliminates every PANVKDBG call site. Same runtime
               performance as a source-level strip, no risk to control flow.
-            - **Note:** This builds the Gallium (OpenGL) driver (`libpanfrost_dri.so`). 
+            - **Note:** This builds the unified Gallium (OpenGL) DRI module (`libgallium_dri.so`). 
               PanVK (Vulkan) is not built because it requires the Panthor kernel 
               driver, which is incompatible with Android's `kbase` driver.
 
             ### Files
             - `panfrost-termux-aarch64-debugoptimized-*.tar.gz` — full install tree (debug)
             - `panfrost-termux-aarch64-release-*.tar.gz` — full install tree (release)
-            - `libpanfrost_dri.so` — OpenGL driver (from the last-built variant)
+            - `libgallium_dri.so` — Unified OpenGL DRI driver containing Panfrost (from the last-built variant)
 
             ### Install (Termux)
             ```bash
@@ -334,7 +332,7 @@ jobs:
             ```
           files: |
             artifacts/*.tar.gz
-            artifacts/**/libpanfrost_dri.so
+            artifacts/**/libgallium_dri.so
           overwrite_files: true
           generate_release_notes: true
           prerelease: true
