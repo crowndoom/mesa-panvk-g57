@@ -194,9 +194,9 @@ jobs:
               echo "=============================================="
 
               # Dynamically locate pan_device.c to avoid path mismatches
-              PAN_DEVICE_C=$(find . -type f -name "pan_device.c" | grep "gallium/drivers/panfrost" | head -n 1)
+              PAN_DEVICE_C=src/gallium/drivers/panfrost/pan_device.c
               if [[ -z "$PAN_DEVICE_C" ]]; then
-                echo "ERROR: Could not find pan_device.c under src/gallium/drivers/panfrost"
+                echo "ERROR: Could not find pan_device.c under src/gallium/drivers/"
                 echo "Searching whole repo for pan_device.c:"
                 find . -name "pan_device.c"
                 exit 1
