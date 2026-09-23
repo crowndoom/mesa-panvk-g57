@@ -192,13 +192,27 @@ jobs:
               echo "=============================================="
               echo "Patching pan_device.c for new pan_query_core_count signature..."
               echo "=============================================="
-              # Flatten the file so multi-line calls can be matched
-              sed -i ':a;N;$!ba;s/\n/ /g' src/gallium/drivers/panfrost/pan_device.c
-              # Replace the old two-argument call with the new single-argument calls
-              sed -i "s/dev->core_count[[:space:]]*=[[:space:]]*pan_query_core_count(&dev->kmod\.dev->props, &dev->core_id_range);/dev->core_count = pan_query_core_count(\&dev->kmod.dev->props);\n   dev->core_id_range = pan_query_core_id_range(\&dev->kmod.dev->props);/g" src/gallium/drivers/panfrost/pan_device.c
+
+              # Dynamically locate pan_device.c to avoid path mismatches
+              PAN_DEVICE_C=$(find . -type f -name "pan_device.c" | grep "gallium/drivers/panfrost" | head -n 1)
+              if [[ -z "$PAN_DEVICE_C" ]]; then
+                echo "ERROR: Could not find pan_device.c under src/gallium/drivers/panfrost"
+                echo "Searching whole repo for pan_device.c:"
+                find . -name "pan_device.c"
+                exit 1
+              fi
+              echo "Found pan_device.c at: $PAN_DEVICE_C"
+
+              # Flatten the file so multi-line function calls are matched correctly
+              sed -i ':a;N;$!ba;s/\n/ /g' "$PAN_DEVICE_C"
+
+              # Replace the old two-argument call with the new single-argument calls.
+              # Using | as delimiter to avoid escaping /.
+              sed -i "s|pan_query_core_count(&dev->kmod\.dev->props, &dev->core_id_range)|pan_query_core_count(\&dev->kmod.dev->props); dev->core_id_range = pan_query_core_id_range(\&dev->kmod.dev->props)|g" "$PAN_DEVICE_C"
+
               # Verify the patch
               echo "--- Verification of pan_query_core calls: ---"
-              grep -n "pan_query_core" src/gallium/drivers/panfrost/pan_device.c
+              grep -o "pan_query_core_[a-z_]*([^;]*)" "$PAN_DEVICE_C" | head -n 10
               # ─────────────────────────────────────────────────────
 
               meson setup build-bionic \
