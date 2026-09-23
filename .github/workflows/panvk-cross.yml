@@ -115,6 +115,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install mako PyYAML meson ninja packaging
 
+      - name: Verify libdrm headers are present
+        run: |
+          set -euo pipefail
+          if [[ ! -f /usr/include/libdrm/xf86drm.h ]]; then
+            echo "ERROR: /usr/include/libdrm/xf86drm.h not found"
+            echo "libdrm-dev may not have installed correctly."
+            ls -la /usr/include/libdrm/ 2>/dev/null || true
+            exit 1
+          fi
+          echo "xf86drm.h present at:"
+          ls -l /usr/include/libdrm/xf86drm.h
+
       - name: Clone mesa-panvk-g57 and apply sigbus.patch
         run: |
           set -euo pipefail
@@ -209,12 +221,15 @@ jobs:
           Cflags:
           EOF
 
+          # libdrm: provide both the linker flag AND the header include path.
+          # Mesa needs <xf86drm.h> which lives in /usr/include/libdrm on the
+          # host (installed by libdrm-dev). The Android NDK does not ship it.
           cat > shims/libdrm.pc <<'EOF'
           Name: libdrm
           Description: libdrm (Android shim)
           Version: 2.5
           Libs: -ldrm
-          Cflags:
+          Cflags: -I/usr/include/libdrm
           EOF
 
           cat > shims/android.hardware.graphics.mapper.pc <<'EOF'
@@ -246,10 +261,10 @@ jobs:
 
           echo "==== shims directory ===="
           ls -la shims
+          echo "==== libdrm.pc ===="
+          cat shims/libdrm.pc
           echo "==== x11-xcb.pc ===="
           cat shims/x11-xcb.pc
-          echo "==== xcb-keysyms.pc ===="
-          cat shims/xcb-keysyms.pc
           echo "==== librt.a ===="
           file shims/librt.a || ls -lh shims/librt.a
 
