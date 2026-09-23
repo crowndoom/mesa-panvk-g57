@@ -1,4 +1,4 @@
-name: release Mesa (Panfrost + PanVK) for Termux (aarch64, native)
+name: release Panfrost (OpenGL) for Termux (aarch64, native)
 
 on:
   push:
@@ -65,7 +65,7 @@ jobs:
   build:
     needs: prepare
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 180
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -116,7 +116,7 @@ jobs:
           echo "--- contents ---"
           cat "$HDR"
 
-      - name: Build Mesa (${{ matrix.build-type }}) inside Termux container
+      - name: Build Panfrost (${{ matrix.build-type }}) inside Termux container
         run: |
           set -euo pipefail
 
@@ -132,6 +132,7 @@ jobs:
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
               export BUILD_TYPE="'"${{ matrix.build-type }}"'"
 
+              # Swap Aliyun for the official Termux mirror
               mkdir -p "$PREFIX/etc/apt/sources.list.d"
               echo "deb https://packages.termux.dev/apt/termux-main stable main" \
                 > "$PREFIX/etc/apt/sources.list.d/termux-main.list"
@@ -155,9 +156,8 @@ jobs:
                 libxcb libxcomposite libxcursor libxfixes libxrender \
                 glslang shaderc vulkan-headers vulkan-loader-generic vulkan-tools \
                 libclc spirv-llvm-translator zlib zstd libexpat \
-                libxrandr libxrandr-static mesa-demos osmesa glmark2 \
-                pulseaudio termux-x11-nightly patch file perl \
-                libglvnd-dev libglvnd
+                libxrandr libxrandr-static mesa-demos osmesa \
+                pulseaudio termux-x11-nightly patch file perl mesa-dev libglvnd-dev libglvnd
 
               pip install --break-system-packages meson mako pyyaml packaging setuptools
 
@@ -176,6 +176,8 @@ jobs:
                   patch -p1 --batch --forward < /patch/sigbus.patch
                 fi
                 git --no-pager diff --stat || true
+              else
+                echo "WARNING: /patch/sigbus.patch not found"
               fi
 
               if [[ ! -f /patch/panvk_silence.h ]]; then
@@ -186,7 +188,7 @@ jobs:
               export CFLAGS="-include $PWD/src/panvk_silence.h"
               export CXXFLAGS="-include $PWD/src/panvk_silence.h"
 
-              # ── Patch pan_device.c to fix pan_query_core_count API mismatch ──
+              # ── CRITICAL FIX: Patch pan_device.c using Perl ──
               echo "=============================================="
               echo "Patching pan_device.c for new pan_query_core_count signature..."
               echo "=============================================="
@@ -202,50 +204,19 @@ jobs:
 
               echo "--- Verification of pan_query_core calls: ---"
               grep -n "pan_query_core" "$PAN_DEVICE_C" | head -n 10
+              # ─────────────────────────────────────────────────────
 
-              # ================================================================
-              # BUILD 1: Vulkan (PanVK) — MUST be built with Gallium DISABLED
-              # ================================================================
-              echo "=============================================="
-              echo "BUILD 1: PanVK (Vulkan) with Gallium disabled..."
-              echo "=============================================="
-
-              meson setup build-vulkan \
-                -Dbuildtype="$BUILD_TYPE" \
-                -Dvulkan-drivers=panfrost \
-                -Dgallium-drivers= \
-                -Dpanfrost-kmds=kbase,panthor \
-                -Dplatforms=x11 \
-                -Dglx=disabled \
-                -Degl=disabled \
-                -Dopengl=false \
-                -Dgles1=disabled \
-                -Dgles2=disabled \
-                -Dbuild-tests=false \
-                -Dlibunwind=disabled \
-                -Dvalgrind=disabled \
-                -Dperfetto=false \
-                -Dpanvk-use-kbase=true \
-                -Dprefix="$PREFIX" \
-                -Dc_link_args=-landroid-shmem \
-                -Dcpp_link_args=-landroid-shmem
-
-              ninja -C build-vulkan -j$(nproc) \
-                src/panfrost/vulkan/libvulkan_panfrost.so
-
-              # ================================================================
-              # BUILD 2: Gallium (OpenGL) — no Vulkan, so Gallium's own rules apply
-              # ================================================================
-              echo "=============================================="
-              echo "BUILD 2: Panfrost Gallium (OpenGL)..."
-              echo "=============================================="
-
-              meson setup build-gallium \
+              # CRITICAL FIX: Build BOTH kbase AND panthor kmods.
+              # The CSF code in pan_csf.c unconditionally references panthor_kmod_* symbols,
+              # even when only kbase is used at runtime. Building both provides the
+              # missing symbols at link time. Runtime guard still prevents GL on kbase.
+              meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
                 -Dvulkan-drivers= \
                 -Dgallium-drivers=panfrost \
                 -Dpanfrost-kmds=kbase,panthor \
                 -Dplatforms=x11 \
+                -Dglvnd=enabled \
                 -Dbuild-tests=false \
                 -Dlibunwind=disabled \
                 -Dvalgrind=disabled \
@@ -254,52 +225,21 @@ jobs:
                 -Dc_link_args=-landroid-shmem \
                 -Dcpp_link_args=-landroid-shmem
 
-              ninja -C build-gallium -j$(nproc)
+              ninja -C build-bionic -j$(nproc)
 
-              # ================================================================
-              # Collect outputs
-              # ================================================================
               mkdir -p /termux-out/lib
-              mkdir -p /termux-out/share/vulkan/icd.d
 
-              # Vulkan driver
-              cp build-vulkan/src/panfrost/vulkan/libvulkan_panfrost.so \
-                 /termux-out/lib/libvulkan_panfrost.so
-
-              # Gallium (OpenGL) driver
-              GALLIUM_SO=$(find build-gallium -name "libgallium*.so" | head -n1)
+              GALLIUM_SO=$(find build-bionic -name "libgallium*.so" | head -n1)
               if [[ -z "$GALLIUM_SO" ]]; then
-                echo "ERROR: libgallium*.so not found in build-gallium"
-                find build-gallium -name "*.so" | head -20
+                echo "ERROR: libgallium*.so not found"
+                find build-bionic -name "*.so" | head -20
                 exit 1
               fi
-              echo "Found Gallium driver: $GALLIUM_SO"
+              echo "Found driver: $GALLIUM_SO"
               cp "$GALLIUM_SO" /termux-out/lib/libgallium_dri.so
-
-              # ICD manifest
-              cat > /termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json <<JSON
-              {
-                  "ICD": {
-                      "api_version": "1.4.354",
-                      "library_arch": "64",
-                      "library_path": "\$PREFIX/lib/libvulkan_panfrost.so"
-                  },
-                  "file_format_version": "1.0.1"
-              }
-              JSON
-
-              # Verify PANVKDBG elimination on both drivers
-              echo "=============================================="
-              echo "Verifying PANVKDBG strings are gone..."
-              echo "=============================================="
-              for so in /termux-out/lib/*.so; do
-                PANVKDBG_STRINGS=$(strings "$so" | grep -c "PANVKDBG" || true)
-                echo "$so : PANVKDBG remaining: $PANVKDBG_STRINGS"
-              done
 
               echo "=== /termux-out ==="
               find /termux-out -type f
-              echo "=== sizes ==="
               ls -lh /termux-out/lib/
             '
 
@@ -307,17 +247,17 @@ jobs:
         run: |
           set -euo pipefail
           cd "termux-out-${{ matrix.build-type }}"
-          TARBALL="mesa-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz"
+          TARBALL="panfrost-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz"
           tar -czvf "../${TARBALL}" .
           ls -lh "../${TARBALL}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mesa-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}
+          name: panfrost-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}
           path: |
             termux-out-${{ matrix.build-type }}/
-            mesa-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz
+            panfrost-termux-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz
           if-no-files-found: error
 
   release:
@@ -337,9 +277,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
-          name: "${{ needs.prepare.outputs.tag }} — Mesa (Panfrost + PanVK) Build ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }} UTC"
+          name: "${{ needs.prepare.outputs.tag }} — Panfrost Build ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }} UTC"
           body: |
-            ## Mesa (Panfrost OpenGL + PanVK Vulkan) for Termux (aarch64, native build)
+            ## Panfrost (OpenGL) for Termux (aarch64, native build)
 
             Built natively inside Termux (`termux/termux-docker:aarch64`)
             on `ubuntu-24.04-arm` — same toolchain class as an on-device
@@ -353,31 +293,17 @@ jobs:
             - `sigbus.patch` applied (SHM debug dump SIGBUS fix)
             - `PANVKDBG` debug fprintf calls silenced via a `-include` wrapper
             - **Patched `pan_device.c`:** Fixed `pan_query_core_count` API mismatch
-            - **Split builds:** PanVK (Vulkan) is built with Gallium disabled
-              (required by the fork's meson.build), while Panfrost (Gallium/OpenGL)
-              is built separately. Outputs from both are merged.
-
-            ### ⚠️ Runtime Caveat
-            PanVK on kbase is **experimental**. Test with `vulkaninfo` and report
-            issues upstream to `xodiosx/mesa-panvk-g57`.
-
-            ### Files
-            - `mesa-termux-aarch64-*.tar.gz` — full install tree
-            - `libgallium_dri.so` — OpenGL driver (Gallium/Panfrost)
-            - `libvulkan_panfrost.so` — Vulkan driver (PanVK)
-            - `panfrost_icd.aarch64.json` — Vulkan ICD manifest
+            - **Built with `kbase,panthor` kmods:** Resolved undefined `panthor_kmod_*`
+              symbols referenced by `pan_csf.c`
+            - **Note:** Builds the unified Gallium (OpenGL) DRI module.
 
             ### Install (Termux)
             ```bash
-            tar -xzf mesa-termux-aarch64-release-*.tar.gz -C $PREFIX
-            export VK_ICD_FILENAMES=$PREFIX/share/vulkan/icd.d/panfrost_icd.aarch64.json
-            vulkaninfo --summary
+            tar -xzf panfrost-termux-aarch64-release-*.tar.gz -C $PREFIX
             ```
           files: |
             artifacts/*.tar.gz
             artifacts/**/libgallium_dri.so
-            artifacts/**/libvulkan_panfrost.so
-            artifacts/**/panfrost_icd.aarch64.json
           overwrite_files: true
           generate_release_notes: true
           prerelease: true
