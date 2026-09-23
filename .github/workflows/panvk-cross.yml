@@ -1,4 +1,4 @@
-name: Build PanVK for cross (aarch64, cross-compile via Android NDK)
+name: Build PanVK for Winlator (aarch64, cross-compile via Android NDK)
 
 on:
   push:
@@ -99,9 +99,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
               build-essential \
-              llvm-dev \
-              libclang-dev \
-              libclc-dev \
+              llvm-18-dev \
+              libclang-18-dev \
+              libclc-18-dev \
+              libllvmspirvlib-18-dev \
               libelf-dev \
               spirv-tools \
               bison \
@@ -169,8 +170,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Resolve NDK path. GitHub's ubuntu-latest image ships the NDK and
-          # exports ANDROID_NDK_LATEST_HOME. Fall back to scanning the sdk dir.
           if [[ -n "${ANDROID_NDK_LATEST_HOME:-}" && -d "$ANDROID_NDK_LATEST_HOME" ]]; then
             NDK="$ANDROID_NDK_LATEST_HOME"
           else
@@ -185,7 +184,7 @@ jobs:
             exit 1
           fi
 
-          API=30   # Android 11 — minimum for aarch64 memfd_create + Vulkan 1.1+
+          API=30
           cat > android-cross.txt <<EOF
           [binaries]
           c         = '$TOOLCHAIN/bin/aarch64-linux-android${API}-clang'
@@ -260,8 +259,6 @@ jobs:
 
           cp mesa-src/build/src/panfrost/vulkan/libvulkan_panfrost.so "$OUT/lib/"
 
-          # ICD manifest for Winlator. Uses a bare library name so it resolves
-          # via LD_LIBRARY_PATH inside the container.
           cat > "$OUT/share/vulkan/icd.d/panfrost_icd.aarch64.json" <<'JSON'
           {
               "file_format_version": "1.0.1",
