@@ -221,7 +221,7 @@ jobs:
               # PanVK (Vulkan) requires the Panthor kernel driver, which is NOT available on Termux/Android (kbase).
               meson setup build-bionic \
                 -Dbuildtype="$BUILD_TYPE" \
-                -Dvulkan-drivers= \
+                -Dvulkan-drivers=panfrost \
                 -Dgallium-drivers=panfrost \
                 -Dpanfrost-kmds=kbase \
                 -Dplatforms=x11 \
