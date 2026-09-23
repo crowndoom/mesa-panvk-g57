@@ -124,13 +124,16 @@ jobs:
           chmod 777 "${{ github.workspace }}/termux-out-${{ matrix.build-type }}"
 
           docker run --rm \
+            -e BUILD_TYPE="${{ matrix.build-type }}" \
             -v "${{ github.workspace }}/termux-out-${{ matrix.build-type }}:/termux-out" \
             -v "${{ github.workspace }}:/patch:ro" \
             termux/termux-docker:aarch64 \
             bash -c '
               set -euo pipefail
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
-              export BUILD_TYPE="'"${{ matrix.build-type }}"'"
+              echo "=============================================="
+              echo "BUILD_TYPE=$BUILD_TYPE (from docker -e)"
+              echo "=============================================="
 
               mkdir -p "$PREFIX/etc/apt/sources.list.d"
               echo "deb https://packages.termux.dev/apt/termux-main stable main" \
@@ -234,7 +237,7 @@ jobs:
                 src/panfrost/vulkan/libvulkan_panfrost.so
 
               # ================================================================
-              # BUILD 2: Gallium (OpenGL) — no Vulkan, so Gallium's own rules apply
+              # BUILD 2: Gallium (OpenGL) — separate meson dir
               # ================================================================
               echo "=============================================="
               echo "BUILD 2: Panfrost Gallium (OpenGL)..."
@@ -262,11 +265,9 @@ jobs:
               mkdir -p /termux-out/lib
               mkdir -p /termux-out/share/vulkan/icd.d
 
-              # Vulkan driver
               cp build-vulkan/src/panfrost/vulkan/libvulkan_panfrost.so \
                  /termux-out/lib/libvulkan_panfrost.so
 
-              # Gallium (OpenGL) driver
               GALLIUM_SO=$(find build-gallium -name "libgallium*.so" | head -n1)
               if [[ -z "$GALLIUM_SO" ]]; then
                 echo "ERROR: libgallium*.so not found in build-gallium"
@@ -276,19 +277,18 @@ jobs:
               echo "Found Gallium driver: $GALLIUM_SO"
               cp "$GALLIUM_SO" /termux-out/lib/libgallium_dri.so
 
-              # ICD manifest
+              # ICD manifest using container $PREFIX
               cat > /termux-out/share/vulkan/icd.d/panfrost_icd.aarch64.json <<JSON
               {
                   "ICD": {
                       "api_version": "1.4.354",
                       "library_arch": "64",
-                      "library_path": "\$PREFIX/lib/libvulkan_panfrost.so"
+                      "library_path": "$PREFIX/lib/libvulkan_panfrost.so"
                   },
                   "file_format_version": "1.0.1"
               }
               JSON
 
-              # Verify PANVKDBG elimination on both drivers
               echo "=============================================="
               echo "Verifying PANVKDBG strings are gone..."
               echo "=============================================="
@@ -355,7 +355,7 @@ jobs:
             - **Patched `pan_device.c`:** Fixed `pan_query_core_count` API mismatch
             - **Split builds:** PanVK (Vulkan) is built with Gallium disabled
               (required by the fork's meson.build), while Panfrost (Gallium/OpenGL)
-              is built separately. Outputs from both are merged.
+              is built separately. Both outputs are merged.
 
             ### ⚠️ Runtime Caveat
             PanVK on kbase is **experimental**. Test with `vulkaninfo` and report
