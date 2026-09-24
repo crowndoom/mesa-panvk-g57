@@ -2244,17 +2244,11 @@ kbase_kmod_flush_bo_map_syncs(struct pan_kmod_dev *dev)
                     ? BASE_SYNCSET_OP_MSYNC
                     : BASE_SYNCSET_OP_CSYNC,
       };
-<<<<<<< HEAD
       if (getenv("PANVK_G57_DEBUG")) {
          fprintf(stderr, "PANVKDBG mem_sync: type=%d va=%llx start=%llx size=%llu\n",
                  (int)req.type, (unsigned long long)req.handle,
                  (unsigned long long)sync->start, (unsigned long long)sync->size);
       }
-=======
-      fprintf(stderr, "PANVKDBG mem_sync: type=%d va=%llx start=%llx size=%llu\n",
-              (int)req.type, (unsigned long long)req.handle,
-              (unsigned long long)sync->start, (unsigned long long)sync->size);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
 
       if (pan_kmod_ioctl(dev->fd, KBASE_IOCTL_MEM_SYNC, &req)) {
          mesa_loge("kbase: KBASE_IOCTL_MEM_SYNC failed: %s", strerror(errno));

@@ -41,7 +41,6 @@ enum {
    BASE_JD_EVENT_DONE = 0x01,
 };
 
-<<<<<<< HEAD
 /* G57 perf gate: heavy PANVKDBG dumps are opt-in via PANVK_G57_DEBUG=1.
  * Default (unset) is quiet for vkmark/vkcube FPS. Failures still use
  * mesa_loge unconditionally. */
@@ -51,8 +50,6 @@ panvk_g57_debug_enabled(void)
    return getenv("PANVK_G57_DEBUG") != NULL;
 }
 
-=======
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
 /* Implemented here; the only caller (the kbase path of gpu_queue_submit in
  * panvk_vX_gpu_queue.c) prototypes it as panvk_per_arch(kbase_jm_submit). */
 VkResult
@@ -147,15 +144,10 @@ panvk_kbase_wait_jobs(struct panvk_device *dev,
          return VK_ERROR_DEVICE_LOST;
       }
 
-<<<<<<< HEAD
       if (panvk_g57_debug_enabled()) {
          fprintf(stderr, "PANVKDBG kbase JD event: code=0x%02x atom=%u\n",
                  ev.event_code, ev.atom_number);
       }
-=======
-      fprintf(stderr, "PANVKDBG kbase JD event: code=0x%02x atom=%u\n",
-              ev.event_code, ev.atom_number);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
       if (!pending[ev.atom_number]) {
          mesa_loge("kbase: unexpected JD event for atom %u", ev.atom_number);
          return VK_ERROR_DEVICE_LOST;
@@ -183,7 +175,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
    struct panvk_device *dev = to_panvk_device(queue->vk.base.device);
    ASSERTED int ret;
 
-<<<<<<< HEAD
    const bool g57_dbg = panvk_g57_debug_enabled();
    if (g57_dbg) {
       fprintf(stderr, "PANVKDBG submit_batch kbase: batch=%p vtc=%s frag=%s bos=%u\n",
@@ -195,23 +186,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
    if (batch->issued) {
       /* Debug-only full MALLOC_VERTEX dump before reset. */
       if (g57_dbg && batch->vtc_jc.first_job) {
-=======
-   fprintf(stderr, "PANVKDBG submit_batch kbase: batch=%p vtc=%s frag=%s bos=%u\n",
-           (void *)batch,
-           batch->vtc_jc.first_job ? "Y" : "N",
-           batch->frag_jc.first_job ? "Y" : "N", nr_bos);
-   mesa_logd("panvk: submit_batch start vtc=%s frag=%s",
-             batch->vtc_jc.first_job ? "yes" : "no",
-             batch->frag_jc.first_job ? "yes" : "no");
-
-   if (batch->issued) {
-      /*
-       * PANVKDBG JOB384:
-       * Inspect the complete Valhall MALLOC_VERTEX job after its previous
-       * execution and BEFORE clearing the 16-byte GPU-written job status.
-       */
-      if (batch->vtc_jc.first_job) {
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
          const uint32_t *j384 =
             (const uint32_t *)(uintptr_t)batch->vtc_jc.first_job;
 
@@ -233,20 +207,12 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          }
       }
 
-<<<<<<< HEAD
       /* GPU writes status/context into the descriptor pool. One
        * invalidate+flush before restoring descriptors for re-submit. */
       panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
       pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
 
       if (g57_dbg && batch->tiler.ctx_descs.cpu) {
-=======
-      /* PANVKDBG diagnostic only: inspect GPU-written tiler context before reset. */
-      panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
-      pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
-
-      if (batch->tiler.ctx_descs.cpu) {
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
          const uint32_t *tc_pre =
             (const uint32_t *)batch->tiler.ctx_descs.cpu;
 
@@ -264,14 +230,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                  tc_pre[4], tc_pre[5], tc_pre[6], tc_pre[7]);
       }
 
-<<<<<<< HEAD
-=======
-      /* GPU writes status/context data into the descriptor pool.
-       * Invalidate CPU mappings before restoring descriptors for re-submit. */
-      panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
-      pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
-
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
       /*
        * Re-submit reset.
        *
@@ -299,7 +257,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
 
 #if PAN_ARCH >= 9
          if (job_type == MALI_JOB_TYPE_MALLOC_VERTEX) {
-<<<<<<< HEAD
             if (g57_dbg) {
                fprintf(stderr,
                        "PANVKDBG RESET_MV_ALL idx=%u ptr=%p "
@@ -307,13 +264,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                        reset_mv_idx, *job,
                        j[34], j[35], j[36]);
             }
-=======
-            fprintf(stderr,
-                    "PANVKDBG RESET_MV_ALL idx=%u ptr=%p "
-                    "before=%08x %08x %08x\\n",
-                    reset_mv_idx, *job,
-                    j[34], j[35], j[36]);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
 
             /*
              * Restore the pristine Draw.Vertex array input.
@@ -333,7 +283,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                cfg.packet = true;
             }
 
-<<<<<<< HEAD
             if (g57_dbg) {
                fprintf(stderr,
                        "PANVKDBG RESET_MV_ALL idx=%u ptr=%p "
@@ -341,13 +290,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                        reset_mv_idx, *job,
                        j[34], j[35], j[36]);
             }
-=======
-            fprintf(stderr,
-                    "PANVKDBG RESET_MV_ALL idx=%u ptr=%p "
-                    "after=%08x %08x %08x\\n",
-                    reset_mv_idx, *job,
-                    j[34], j[35], j[36]);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
 
             reset_mv_idx++;
          }
@@ -370,10 +312,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
 
    pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
 
-<<<<<<< HEAD
    if (g57_dbg) {
-=======
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
    /* Debug: compare the exact first job before first submit and re-submit. */
    fprintf(stderr,
            "PANVKDBG PRESUB issued=%u batch=%p vtc=%016llx frag=%016llx\\n",
@@ -500,10 +439,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                  j384[i + 6], j384[i + 7]);
       }
    }
-<<<<<<< HEAD
    }
-=======
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
 
    /* A draw chain starts with a MALLOC_VERTEX (Valhall IDVS) job, which
     * needs both the shader cores and the tiler: submitting it with only
@@ -520,15 +456,10 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
       if (job_type == MALI_JOB_TYPE_COMPUTE || job_type == MALI_JOB_TYPE_NULL)
          vtc_core = BASE_JD_REQ_CS;
    }
-<<<<<<< HEAD
    if (g57_dbg) {
       fprintf(stderr, "PANVKDBG core envraw vtc=%s frag=%s\n",
               getenv("PANVK_KBASE_VTC_CORE"), getenv("PANVK_KBASE_FRAG_CORE"));
    }
-=======
-   fprintf(stderr, "PANVKDBG core envraw vtc=%s frag=%s\n",
-           getenv("PANVK_KBASE_VTC_CORE"), getenv("PANVK_KBASE_FRAG_CORE"));
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
    if (getenv("PANVK_KBASE_VTC_CORE"))
       vtc_core = strtoul(getenv("PANVK_KBASE_VTC_CORE"), NULL, 0);
    if (getenv("PANVK_KBASE_FRAG_CORE"))
@@ -565,15 +496,10 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          uint64_t masked = poly & 0x0000ffffffffffffull;
          tc[0] = (uint32_t)masked;
          tc[1] = (uint32_t)(masked >> 32);
-<<<<<<< HEAD
          if (g57_dbg) {
             fprintf(stderr, "PANVKDBG mask poly %016llx -> %016llx\n",
                     (unsigned long long)poly, (unsigned long long)masked);
          }
-=======
-         fprintf(stderr, "PANVKDBG mask poly %016llx -> %016llx\n",
-                 (unsigned long long)poly, (unsigned long long)masked);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
          panvk_pool_flush_maps(&cmdbuf->desc_pool);
          pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
       }
@@ -621,19 +547,12 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          extres[i].ext_resource =
             userbuf_vas[i] | BASE_EXT_RES_ACCESS_EXCLUSIVE;
 
-<<<<<<< HEAD
          if (g57_dbg) {
             fprintf(stderr,
                     "PANVKDBG EXTRES[%u]=%016llx\n",
                     i,
                     (unsigned long long)extres[i].ext_resource);
          }
-=======
-         fprintf(stderr,
-                 "PANVKDBG EXTRES[%u]=%016llx\n",
-                 i,
-                 (unsigned long long)extres[i].ext_resource);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
       }
 
       memset(atoms, 0, sizeof(atoms));
@@ -649,7 +568,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
             atoms[nr_atoms].nr_extres = nr_extres;
             atoms[nr_atoms].core_req |= BASE_JD_REQ_EXTERNAL_RESOURCES;
 
-<<<<<<< HEAD
             if (g57_dbg) {
                fprintf(stderr,
                        "PANVKDBG VTC EXTRES count=%u core_req=%08x list=%p\n",
@@ -657,13 +575,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                        atoms[nr_atoms].core_req,
                        (void *)extres);
             }
-=======
-            fprintf(stderr,
-                    "PANVKDBG VTC EXTRES count=%u core_req=%08x list=%p\n",
-                    nr_extres,
-                    atoms[nr_atoms].core_req,
-                    (void *)extres);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
          }
 
          nr_atoms++;
@@ -677,7 +588,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
             atoms[nr_atoms].pre_dep[0].dependency_type = 1; /* DATA */
          }
          atoms[nr_atoms].core_req = frag_core;
-<<<<<<< HEAD
          /* effect2d/shading frag chains can also touch WSI USER_BUFFERs
           * (meta-copy resolve). Advertise the same extres on frag, not
           * only vtc, otherwise the kernel faults with 0x58
@@ -695,8 +605,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                        (void *)extres);
             }
          }
-=======
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
          nr_atoms++;
       }
 
@@ -723,7 +631,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
             mesa_loge("kbase: KBASE_IOCTL_JOB_SUBMIT failed: %s", strerror(errno));
             return VK_ERROR_DEVICE_LOST;
          }
-<<<<<<< HEAD
          if (g57_dbg) {
             fprintf(stderr,
                     "PANVKDBG JD submit ok vtc=%s frag=%s atoms=%u vtc_core=%x frag_core=%x\n",
@@ -735,28 +642,12 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          VkResult result = panvk_kbase_wait_jobs(dev, atoms, nr_atoms);
 
          if (g57_dbg && result == VK_SUCCESS && batch->frag_jc.first_job) {
-=======
-         fprintf(stderr,
-                 "PANVKDBG JD submit ok vtc=%s frag=%s atoms=%u vtc_core=%x frag_core=%x\n",
-                 batch->vtc_jc.first_job ? "Y" : "N",
-                 batch->frag_jc.first_job ? "Y" : "N", nr_atoms, vtc_core,
-                 frag_core);
-         mesa_logd("panvk: job bag submit ok");
-
-         VkResult result = panvk_kbase_wait_jobs(dev, atoms, nr_atoms);
-
-         if (result == VK_SUCCESS && batch->frag_jc.first_job) {
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
             fprintf(stderr,
                     "PANVKDBG FRAG DONE: dumping native BOs\n");
             kbase_kmod_debug_dump_native_bos(dev->kmod.dev);
          }
 
-<<<<<<< HEAD
          if (g57_dbg && result == VK_SUCCESS && batch->vtc_jc.first_job) {
-=======
-         if (result == VK_SUCCESS && batch->vtc_jc.first_job) {
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
             fprintf(stderr,
                     "PANVKDBG VTC DONE: dumping USER_BUFFER mappings\n");
             kbase_kmod_debug_dump_user_buffers(dev->kmod.dev);
@@ -817,10 +708,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
    }
 
    batch->issued = true;
-<<<<<<< HEAD
-=======
-   mesa_logd("panvk: submit_batch end");
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
    return VK_SUCCESS;
 }
 
@@ -832,19 +719,11 @@ panvk_per_arch(kbase_jm_submit)(struct vk_queue *vk_queue,
 {
    uint64_t targets[PANVK_KBASE_SYNC_TARGET_COUNT] = {};
 
-<<<<<<< HEAD
    if (panvk_g57_debug_enabled()) {
       fprintf(stderr, "PANVKDBG kbase submit: wait=%u signal=%u cmdbuf=%u\n",
               submit->wait_count, submit->signal_count,
               submit->command_buffer_count);
    }
-=======
-   fprintf(stderr, "PANVKDBG kbase submit: wait=%u signal=%u cmdbuf=%u\n",
-           submit->wait_count, submit->signal_count,
-           submit->command_buffer_count);
-   mesa_logd("panvk: kbase gpu_queue_submit start, cmd_count=%u",
-             submit->command_buffer_count);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
 
    /* On kbase there are no DRM syncobjs: resolve incoming semaphore waits on
     * the CPU before emitting the jobs. */
@@ -865,12 +744,8 @@ panvk_per_arch(kbase_jm_submit)(struct vk_queue *vk_queue,
       unsigned nb = 0;
       list_for_each_entry(struct panvk_batch, batch, &cmdbuf->batches, node)
          nb++;
-<<<<<<< HEAD
       if (panvk_g57_debug_enabled())
          fprintf(stderr, "PANVKDBG kbase submit cmdbuf[%u]: batches=%u\n", j, nb);
-=======
-      fprintf(stderr, "PANVKDBG kbase submit cmdbuf[%u]: batches=%u\n", j, nb);
->>>>>>> 5cfe37d1ac0e3d267f9661e47013e6de7ddb352f
 
       list_for_each_entry(struct panvk_batch, batch, &cmdbuf->batches, node) {
          VkResult result = panvk_kbase_jm_submit_batch(queue, cmdbuf, batch,
