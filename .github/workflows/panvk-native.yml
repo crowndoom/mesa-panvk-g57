@@ -57,6 +57,7 @@ jobs:
           chmod 777 "${{ github.workspace }}/termux-out"
 
           docker run --rm \
+            -v "${{ github.workspace }}:/src:ro" \
             -v "${{ github.workspace }}/termux-out:/termux-out" \
             termux/termux-docker:aarch64 \
             bash -c '
@@ -77,8 +78,10 @@ jobs:
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
               rm -rf mesa-panvk
-              git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
+              # Build THIS repo (frag-extres + debug-gate fix), not upstream.
+              cp -a /src mesa-panvk
               cd mesa-panvk
+              rm -rf build-bionic termux-out
 
               meson setup build-bionic \
                 -Dbuildtype=debugoptimized \
