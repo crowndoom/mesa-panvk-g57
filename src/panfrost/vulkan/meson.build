@@ -106,7 +106,11 @@ jm_files = [
 
 # Backend alternativo: submissao JM raw via /dev/mali0 (kbase) ao inves de DRM Panfrost.
 # Usar: meson setup build -Dpanvk-use-kbase=true
-if get_option('panvk-use-kbase')
+# The kbase submit TU must also be present whenever the kbase KMD backend is
+# enabled (-Dpanfrost-kmds=kbase,...): jm/panvk_vX_gpu_queue.c references
+# panvk_<arch>_kbase_jm_submit under HAVE_PAN_KMOD_KBASE, so omitting the TU
+# breaks the link (undefined reference for v6/v7/v9).
+if get_option('panvk-use-kbase') or panfrost_kmds.contains('kbase')
    panvk_flags += '-DPANVK_USE_KBASE'
    jm_files += ['jm/panvk_vX_gpu_queue_kbase.c']
 endif
