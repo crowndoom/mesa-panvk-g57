@@ -1,8 +1,8 @@
 --- a/src/panfrost/lib/kmod/kbase_kmod.c
 +++ b/src/panfrost/lib/kmod/kbase_kmod.c
 @@ -1729,21 +1729,8 @@
-               cpu[8], cpu[9], cpu[10], cpu[11],
-               cpu[12], cpu[13], cpu[14], cpu[15]);
+                cpu[8], cpu[9], cpu[10], cpu[11],
+                cpu[12], cpu[13], cpu[14], cpu[15]);
  
 -      fprintf(stderr,
 -              "PANVKDBG SHM[%u] GPU0 "
@@ -38,17 +38,6 @@
 -                 gpu[4], gpu[5], gpu[6], gpu[7],
 -                 gpu[8], gpu[9], gpu[10], gpu[11],
 -                 gpu[12], gpu[13], gpu[14], gpu[15]);
-      }
+       }
     }
  }
---- a/include/vulkan/vk_android_native_buffer.h
-+++ b/include/vulkan/vk_android_native_buffer.h
-@@ -17,7 +17,7 @@
-  * system, on the host
-  * system rather the build target.
-  */
--#if (defined(__ANDROID__) || defined(ANDROID)) && 0 /* PATCH: Termux toolchain lacks AOSP cutils/native_handle.h; use portable buffer_handle_t */
-+#if defined(__ANDROID__) || defined(ANDROID)
- 
- #include <cutils/native_handle.h>
- #if ANDROID_API_LEVEL < 28
