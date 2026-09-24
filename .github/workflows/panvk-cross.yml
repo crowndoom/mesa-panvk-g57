@@ -162,12 +162,23 @@ jobs:
             exit 1
           fi
 
-      - name: Clone mesa-panvk-g57 and apply sigbus.patch
+      - name: Stage local tree as mesa-src and apply sigbus.patch
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           rm -rf mesa-src
-          git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-src
+          mkdir -p mesa-src
+          # Build THIS repo (includes the G57 frag-extres + debug-gate fix),
+          # not upstream xodiosx. Exclude prior build outputs and VCS data.
+          tar -C "$GITHUB_WORKSPACE" \
+            --exclude='./mesa-src' \
+            --exclude='./.git' \
+            --exclude='./build' \
+            --exclude='./build-host' \
+            --exclude='./build-bionic' \
+            --exclude='./winlator-out-*' \
+            --exclude='./*.tar.gz' \
+            -cf - . | tar -C mesa-src -xf -
           cd mesa-src
 
           echo "=============================================="
