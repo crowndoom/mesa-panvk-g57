@@ -17,7 +17,7 @@
  * system rather the build target.
  */
 
-#if (defined(__ANDROID__) || defined(ANDROID)) && 0 /* PATCH: Termux toolchain lacks AOSP cutils/native_handle.h; use portable buffer_handle_t */
+#if defined(__ANDROID__) || defined(ANDROID)
 
 #include <cutils/native_handle.h>
 #if ANDROID_API_LEVEL < 28
@@ -122,32 +122,11 @@ typedef enum VkSwapchainImageUsageFlagBitsANDROID {
 } VkSwapchainImageUsageFlagBitsANDROID;
 typedef VkFlags VkSwapchainImageUsageFlagsANDROID;
 
-/*
- * struct VkNativeBufferUsage2ANDROID
- *
- * consumer: gralloc1 consumer usage flag
- * producer: gralloc1 producer usage flag
- */
 typedef struct {
     uint64_t                          consumer;
     uint64_t                          producer;
 } VkNativeBufferUsage2ANDROID;
 
-/*
- * struct VkNativeBufferANDROID
- *
- * sType: VK_STRUCTURE_TYPE_NATIVE_BUFFER_ANDROID
- * pNext: NULL or a pointer to a structure extending this structure
- * handle: buffer handle returned from gralloc alloc()
- * stride: stride returned from gralloc alloc()
- * format: gralloc format requested when the buffer was allocated
- * usage: gralloc usage requested when the buffer was allocated
- * usage2: gralloc usage requested when the buffer was allocated
- * usage3: gralloc usage requested when the buffer was allocated
- * ahb: The AHardwareBuffer* from the actual ANativeWindowBuffer. Caller
- *      maintains ownership of resource. AHardwareBuffer pointer is only valid
- *      for the duration of the function call
- */
 typedef struct {
     VkStructureType                   sType;
     const void*                       pNext;
@@ -160,42 +139,18 @@ typedef struct {
     struct AHardwareBuffer*           ahb; /* ADDED in SPEC_VERSION 11 */
 } VkNativeBufferANDROID;
 
-/*
- * struct VkSwapchainImageCreateInfoANDROID
- *
- * sType: VK_STRUCTURE_TYPE_SWAPCHAIN_IMAGE_CREATE_INFO_ANDROID
- * pNext: NULL or a pointer to a structure extending this structure
- * usage: is a bitmask of VkSwapchainImageUsageFlagsANDROID
- */
 typedef struct {
     VkStructureType                   sType;
     const void*                       pNext;
     VkSwapchainImageUsageFlagsANDROID usage;
 } VkSwapchainImageCreateInfoANDROID;
 
-/*
- * struct VkPhysicalDevicePresentationPropertiesANDROID
- *
- * sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENTATION_PROPERTIES_ANDROID
- * pNext: NULL or a pointer to a structure extending this structure
- * sharedImage: specifies if the image can be shared with the display system
- */
 typedef struct {
     VkStructureType                   sType;
     const void*                       pNext;
     VkBool32                          sharedImage;
 } VkPhysicalDevicePresentationPropertiesANDROID;
 
-/*
- * struct VkGrallocUsageInfoANDROID
- *
- * sType: VK_STRUCTURE_TYPE_GRALLOC_USAGE_INFO_ANDROID
- * pNext: NULL or a pointer to a structure extending this structure
- * format: value specifying the format the image will be created with
- * imageUsage: bitmask of VkImageUsageFlagBits describing intended usage
- *
- * DEPRECATED in SPEC_VERSION 10
- */
 typedef struct {
     VkStructureType                   sType;
     const void*                       pNext;
@@ -203,17 +158,6 @@ typedef struct {
     VkImageUsageFlags                 imageUsage;
 } VkGrallocUsageInfoANDROID;
 
-/*
- * struct VkGrallocUsageInfo2ANDROID
- *
- * sType: VK_STRUCTURE_TYPE_GRALLOC_USAGE_INFO_2_ANDROID
- * pNext: NULL or a pointer to a structure extending this structure
- * format: value specifying the format the image will be created with
- * imageUsage: bitmask of VkImageUsageFlagBits describing intended usage
- * swapchainImageUsage: is a bitmask of VkSwapchainImageUsageFlagsANDROID
- *
- * DEPRECATED in SPEC_VERSION 11
- */
 typedef struct {
     VkStructureType                   sType;
     const void*                       pNext;
@@ -255,7 +199,7 @@ typedef VkResult (VKAPI_PTR *PFN_vkAcquireImageANDROID)(
     VkImage                           image,
     int                               nativeFenceFd,
     VkSemaphore                       semaphore,
-    VkFence                           fence);
+    VkFence                            fence);
 
 typedef VkResult (VKAPI_PTR *PFN_vkQueueSignalReleaseImageANDROID)(
     VkQueue                           queue,
@@ -265,55 +209,21 @@ typedef VkResult (VKAPI_PTR *PFN_vkQueueSignalReleaseImageANDROID)(
     int*                              pNativeFenceFd);
 
 #ifndef VK_NO_PROTOTYPES
-
-/* DEPRECATED in SPEC_VERSION 6 */
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSwapchainGrallocUsageANDROID(
-    VkDevice                          device,
-    VkFormat                          format,
-    VkImageUsageFlags                 imageUsage,
-    int*                              grallocUsage
-);
-
-/* DEPRECATED in SPEC_VERSION 9 */
+    VkDevice device, VkFormat format, VkImageUsageFlags imageUsage, int* grallocUsage);
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSwapchainGrallocUsage2ANDROID(
-    VkDevice                          device,
-    VkFormat                          format,
-    VkImageUsageFlags                 imageUsage,
+    VkDevice device, VkFormat format, VkImageUsageFlags imageUsage,
     VkSwapchainImageUsageFlagsANDROID swapchainImageUsage,
-    uint64_t*                         grallocConsumerUsage,
-    uint64_t*                         grallocProducerUsage
-);
-
-/* DEPRECATED in SPEC_VERSION 10 */
+    uint64_t* grallocConsumerUsage, uint64_t* grallocProducerUsage);
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSwapchainGrallocUsage3ANDROID(
-    VkDevice                          device,
-    const VkGrallocUsageInfoANDROID*  grallocUsageInfo,
-    uint64_t*                         grallocUsage
-);
-
-/* DEPRECATED in SPEC_VERSION 11 */
+    VkDevice device, const VkGrallocUsageInfoANDROID* grallocUsageInfo, uint64_t* grallocUsage);
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSwapchainGrallocUsage4ANDROID(
-    VkDevice                          device,
-    const VkGrallocUsageInfo2ANDROID* grallocUsageInfo,
-    uint64_t*                         grallocUsage
-);
-
+    VkDevice device, const VkGrallocUsageInfo2ANDROID* grallocUsageInfo, uint64_t* grallocUsage);
 VKAPI_ATTR VkResult VKAPI_CALL vkAcquireImageANDROID(
-    VkDevice                          device,
-    VkImage                           image,
-    int                               nativeFenceFd,
-    VkSemaphore                       semaphore,
-    VkFence                           fence
-);
-
+    VkDevice device, VkImage image, int nativeFenceFd, VkSemaphore semaphore, VkFence fence);
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSignalReleaseImageANDROID(
-    VkQueue                           queue,
-    uint32_t                          waitSemaphoreCount,
-    const VkSemaphore*                pWaitSemaphores,
-    VkImage                           image,
-    int*                              pNativeFenceFd
-);
-
+    VkQueue queue, uint32_t waitSemaphoreCount, const VkSemaphore* pWaitSemaphores,
+    VkImage image, int* pNativeFenceFd);
 #endif
 /* clang-format on */
 
