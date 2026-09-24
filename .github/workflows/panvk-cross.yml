@@ -108,6 +108,26 @@ jobs:
               bison \
               flex \
               libdrm-dev \
+              libx11-dev \
+              libx11-xcb-dev \
+              libxcb1-dev \
+              libxcb-randr0-dev \
+              libxcb-dri2-0-dev \
+              libxcb-dri3-dev \
+              libxcb-present-dev \
+              libxcb-shm0-dev \
+              libxcb-sync-dev \
+              libxcb-xfixes0-dev \
+              libxcb-keysyms1-dev \
+              libxcb-shape0-dev \
+              libxcb-render0-dev \
+              libxcb-render-util0-dev \
+              libxcb-xkb-dev \
+              libxcb-icccm4-dev \
+              libxcb-image0-dev \
+              libxcb-util0-dev \
+              libxrandr-dev \
+              libxshmfence-dev \
               pkg-config \
               ninja-build \
               patch \
@@ -115,11 +135,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install mako PyYAML meson ninja packaging
 
-      - name: Verify libdrm headers are present
+      - name: Verify host headers are present
         run: |
           set -euo pipefail
           MISSING=0
-          for h in /usr/include/xf86drm.h /usr/include/xf86drmMode.h /usr/include/libdrm/drm.h; do
+          for h in \
+              /usr/include/xf86drm.h \
+              /usr/include/xf86drmMode.h \
+              /usr/include/libdrm/drm.h \
+              /usr/include/X11/Xlib.h \
+              /usr/include/X11/Xlib-xcb.h \
+              /usr/include/X11/extensions/Xrandr.h \
+              /usr/include/xcb/xcb.h \
+              /usr/include/xcb/xcb_keysyms.h \
+              /usr/include/X11/xshmfence.h
+          do
             if [[ ! -f "$h" ]]; then
               echo "ERROR: $h not found"
               MISSING=1
@@ -128,9 +158,7 @@ jobs:
             fi
           done
           if [[ "$MISSING" -eq 1 ]]; then
-            echo "libdrm-dev may not have installed correctly."
-            ls -la /usr/include/xf86drm* 2>/dev/null || true
-            ls -la /usr/include/libdrm/ 2>/dev/null || true
+            echo "Some dev packages failed to install."
             exit 1
           fi
 
@@ -158,25 +186,43 @@ jobs:
             's/#if defined(HAVE_MEMFD_CREATE) \&\& !defined __TERMUX__/#if defined(HAVE_MEMFD_CREATE)/' \
             src/util/anon_file.c || true
 
-      - name: Stage libdrm headers into a non-standard include dir
+      - name: Stage libdrm + X11 + xcb headers into a workspace include dir
         run: |
           set -euo pipefail
-          # meson strips -I/usr/include* from pkg-config Cflags because it
-          # assumes those are already searched. Under the NDK they are NOT.
-          # Copy the headers into a plain workspace dir so the path survives
-          # meson's filtering and so we never put /usr/include on the
-          # cross-compile search path (which would shadow bionic headers).
-          DEST="$GITHUB_WORKSPACE/mesa-src/drm-include"
+          # meson strips -I/usr/include* from pkg-config Cflags, and putting
+          # those paths on the NDK command line would shadow bionic headers.
+          # Stage everything into one workspace-local tree so meson keeps the
+          # path and bionic stays untouched.
+          DEST="$GITHUB_WORKSPACE/mesa-src/external-include"
+          rm -rf "$DEST"
           mkdir -p "$DEST"
+
+          # ---- libdrm: flat headers ----
           cp /usr/include/xf86drm.h     "$DEST/"
           cp /usr/include/xf86drmMode.h "$DEST/"
           cp /usr/include/libdrm/*.h    "$DEST/"
-          cp -r /usr/include/libdrm/nouveau "$DEST/" 2>/dev/null || true
 
-          echo "==== $DEST ===="
+          # ---- X11 (keeps X11/ prefix) ----
+          cp -r /usr/include/X11 "$DEST/"
+
+          # ---- xcb (keeps xcb/ prefix) ----
+          cp -r /usr/include/xcb "$DEST/"
+
+          echo "==== $DEST (top level) ===="
           ls -la "$DEST"
-          echo "---- xf86drm.h head ----"
-          head -n 30 "$DEST/xf86drm.h"
+          echo "==== X11 sample ===="
+          ls "$DEST/X11" | head -20
+          echo "==== xcb sample ===="
+          ls "$DEST/xcb" | head -20
+          echo "==== sanity: the three headers that were failing ===="
+          for h in xf86drm.h X11/Xlib.h xcb/xcb.h; do
+            if [[ -f "$DEST/$h" ]]; then
+              echo "OK: $DEST/$h"
+            else
+              echo "ERROR: $DEST/$h MISSING"
+              exit 1
+            fi
+          done
 
       - name: Build host tools (mesa_clc, vtn_bindgen2, panfrost_compile)
         working-directory: mesa-src
@@ -225,52 +271,74 @@ jobs:
           fi
 
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          INC="-I${MESON_WORKING_DIR}/external-include"
           mkdir -p shims
 
-          # glibc 2.34+ merged librt into libc. Provide an empty archive so
-          # `-lrt` link checks pass under the Android toolchain.
           "$TOOLCHAIN/bin/llvm-ar" cr shims/librt.a
 
-          cat > shims/x11-xcb.pc <<'EOF'
-          Name: x11-xcb
-          Description: x11-xcb (Android shim)
-          Version: 1.15
-          Libs: -lX11-xcb
-          Cflags:
-          EOF
+          # Every shim gets the same Cflags so mesa can find the staged
+          # headers regardless of which dep triggers the include.
 
-          cat > shims/xrandr.pc <<'EOF'
-          Name: xrandr
-          Description: xrandr (Android shim)
-          Version: 1.15
-          Libs: -lXrandr
-          Cflags:
-          EOF
-
-          # libdrm: point at our staged copy, NOT /usr/include (meson would
-          # strip that, and it would shadow bionic). Non-standard workspace
-          # paths survive meson's pkg-config filtering.
           cat > shims/libdrm.pc <<EOF
           Name: libdrm
           Description: libdrm (Android shim)
           Version: 2.5
           Libs: -ldrm
-          Cflags: -I${MESON_WORKING_DIR}/drm-include
+          Cflags: ${INC}
           EOF
 
-          cat > shims/android.hardware.graphics.mapper.pc <<'EOF'
+          cat > shims/x11-xcb.pc <<EOF
+          Name: x11-xcb
+          Description: x11-xcb (Android shim)
+          Version: 1.15
+          Libs: -lX11-xcb
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/xrandr.pc <<EOF
+          Name: xrandr
+          Description: xrandr (Android shim)
+          Version: 1.15
+          Libs: -lXrandr
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/x11.pc <<EOF
+          Name: x11
+          Description: x11 (Android shim)
+          Version: 1.8
+          Libs: -lX11
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/xext.pc <<EOF
+          Name: xext
+          Description: xext (Android shim)
+          Version: 1.3
+          Libs: -lXext
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/xshmfence.pc <<EOF
+          Name: xshmfence
+          Description: xshmfence (Android shim)
+          Version: 1.3
+          Libs: -lxshmfence
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/android.hardware.graphics.mapper.pc <<EOF
           Name: android.hardware.graphics.mapper
           Description: android.hardware.graphics.mapper (Android shim)
           Version: 4.0
           Libs: -landroid.hardware.graphics.mapper
-          Cflags:
+          Cflags: ${INC}
           EOF
 
           for lib in \
               xcb xcb-randr xcb-dri2 xcb-dri3 xcb-present xcb-shm xcb-sync \
               xcb-xfixes xcb-keysyms xcb-shape xcb-render xcb-renderutil \
               xcb-xkb xcb-icccm xcb-image xcb-util \
-              xshmfence \
               gralloctypes hidlbase utils cutils hardware log sync \
               nativewindow ui
           do
@@ -279,7 +347,7 @@ jobs:
           Description: $lib (Android shim)
           Version: 1.15
           Libs: -l$lib
-          Cflags:
+          Cflags: ${INC}
           EOF
           done
 
@@ -289,10 +357,14 @@ jobs:
           cat shims/libdrm.pc
           echo "==== x11-xcb.pc ===="
           cat shims/x11-xcb.pc
+          echo "==== xcb.pc ===="
+          cat shims/xcb.pc
 
-          echo "==== verify pkg-config sees libdrm with the include path ===="
+          echo "==== pkg-config sanity ===="
           PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags libdrm
-          echo "(that should print -I$MESON_WORKING_DIR/drm-include)"
+          PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags x11-xcb
+          PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags xcb
+          # ^ all three should print: -I${WORKSPACE}/mesa-src/external-include
 
       - name: Generate Android cross file
         working-directory: mesa-src
@@ -329,8 +401,8 @@ jobs:
           needs_exe_wrapper = true
 
           [built-in options]
-          c_args        = ['-I${MESON_WORKING_DIR}/drm-include']
-          cpp_args      = ['-I${MESON_WORKING_DIR}/drm-include']
+          c_args        = ['-I${MESON_WORKING_DIR}/external-include']
+          cpp_args      = ['-I${MESON_WORKING_DIR}/external-include']
           c_link_args   = ['-L${MESON_WORKING_DIR}/shims']
           cpp_link_args = ['-L${MESON_WORKING_DIR}/shims']
           EOF
@@ -349,8 +421,6 @@ jobs:
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
           export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
 
-          # Force a clean configure — the build dir may carry stale
-          # dependency caches from a previous run.
           rm -rf build
 
           meson setup build \
@@ -378,19 +448,16 @@ jobs:
               -Dstrip=false \
               -Dpanfrost-kmds=kbase,panthor
 
-      - name: Verify drm-include is on the compile command line
+      - name: Verify external-include is on the compile command line
         working-directory: mesa-src
         run: |
           set -euo pipefail
-          # Sanity check: confirm meson picked up -I.../drm-include. We grep
-          # the generated build.ninja which will fail loudly if the Cflag
-          # was dropped.
-          if grep -q "$GITHUB_WORKSPACE/mesa-src/drm-include" build/build.ninja; then
-            echo "OK: drm-include IS on the compile line"
-            grep -m1 "drm-include" build/build.ninja | head -c 400
+          if grep -q "$GITHUB_WORKSPACE/mesa-src/external-include" build/build.ninja; then
+            echo "OK: external-include IS on the compile line"
+            grep -m1 "external-include" build/build.ninja | head -c 400
             echo
           else
-            echo "ERROR: drm-include is NOT in build.ninja"
+            echo "ERROR: external-include is NOT in build.ninja"
             echo "---- search for -I paths in build.ninja ----"
             grep -o '\-I[^ ]*' build/build.ninja | sort -u | head -40
             exit 1
