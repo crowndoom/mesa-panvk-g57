@@ -1,0 +1,564 @@
+name: Build PanVK for Winlator (aarch64, cross-compile via Android NDK)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type"
+        type: choice
+        required: true
+        default: both
+        options:
+          - both
+          - debugoptimized
+          - release
+      release_tag:
+        description: "Tag to create (leave empty to auto-generate)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      date:  ${{ steps.ts.outputs.date }}
+      time:  ${{ steps.ts.outputs.time }}
+      stamp: ${{ steps.ts.outputs.stamp }}
+      tag:   ${{ steps.ts.outputs.tag }}
+      types: ${{ steps.ts.outputs.types }}
+    steps:
+      - name: Compute build timestamp and tag
+        id: ts
+        run: |
+          DATE=$(date -u +'%Y-%m-%d')
+          TIME=$(date -u +'%H%M%S')
+          STAMP="${DATE}-${TIME}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "date=$DATE"           >> "$GITHUB_OUTPUT"
+          echo "time=$TIME"           >> "$GITHUB_OUTPUT"
+          echo "stamp=$STAMP"         >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          else
+            TAG="build-${DATE}-${TIME}-${SHORT_SHA}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          CHOICE="${{ github.event.inputs.build_type }}"
+          case "$CHOICE" in
+            release)        TYPES='["release"]' ;;
+            debugoptimized) TYPES='["debugoptimized"]' ;;
+            *)              TYPES='["debugoptimized","release"]' ;;
+          esac
+          echo "types=$TYPES" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        build-type: ${{ fromJSON(needs.prepare.outputs.types) }}
+
+    steps:
+      - name: Checkout (for sigbus.patch)
+        uses: actions/checkout@v4
+
+      - name: Verify sigbus.patch exists at repo root
+        run: |
+          set -euo pipefail
+          PATCH="${{ github.workspace }}/sigbus.patch"
+          if [[ ! -f "$PATCH" ]]; then
+            echo "ERROR: sigbus.patch not found at repo root ($PATCH)"
+            ls -la "${{ github.workspace }}"
+            exit 1
+          fi
+          echo "Found patch:"
+          ls -lh "$PATCH"
+          echo "--- first 30 lines ---"
+          head -n 30 "$PATCH"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              build-essential \
+              llvm-18-dev \
+              libclang-18-dev \
+              libclc-18-dev \
+              libllvmspirvlib-18-dev \
+              libelf-dev \
+              spirv-tools \
+              bison \
+              flex \
+              libdrm-dev \
+              libx11-dev \
+              libx11-xcb-dev \
+              libxcb1-dev \
+              libxcb-randr0-dev \
+              libxcb-dri2-0-dev \
+              libxcb-dri3-dev \
+              libxcb-present-dev \
+              libxcb-shm0-dev \
+              libxcb-sync-dev \
+              libxcb-xfixes0-dev \
+              libxcb-keysyms1-dev \
+              libxcb-shape0-dev \
+              libxcb-render0-dev \
+              libxcb-render-util0-dev \
+              libxcb-xkb-dev \
+              libxcb-icccm4-dev \
+              libxcb-image0-dev \
+              libxcb-util0-dev \
+              libxrandr-dev \
+              libxshmfence-dev \
+              pkg-config \
+              ninja-build \
+              patch \
+              gettext
+          python -m pip install --upgrade pip
+          pip install mako PyYAML meson ninja packaging
+
+      - name: Verify host headers are present
+        run: |
+          set -euo pipefail
+          MISSING=0
+          for h in \
+              /usr/include/xf86drm.h \
+              /usr/include/xf86drmMode.h \
+              /usr/include/libdrm/drm.h \
+              /usr/include/X11/Xlib.h \
+              /usr/include/X11/Xlib-xcb.h \
+              /usr/include/X11/extensions/Xrandr.h \
+              /usr/include/xcb/xcb.h \
+              /usr/include/xcb/xcb_keysyms.h \
+              /usr/include/X11/xshmfence.h
+          do
+            if [[ ! -f "$h" ]]; then
+              echo "ERROR: $h not found"
+              MISSING=1
+            else
+              echo "OK: $h"
+            fi
+          done
+          if [[ "$MISSING" -eq 1 ]]; then
+            echo "Some dev packages failed to install."
+            exit 1
+          fi
+
+      - name: Clone mesa-panvk-g57 and apply sigbus.patch
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -rf mesa-src
+          git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-src
+          cd mesa-src
+
+          echo "=============================================="
+          echo "Applying sigbus.patch from repo root"
+          echo "=============================================="
+          if git apply --verbose "$GITHUB_WORKSPACE/sigbus.patch"; then
+            echo ">>> git apply succeeded"
+          else
+            echo ">>> git apply failed, falling back to patch(1)"
+            patch -p1 --batch --forward < "$GITHUB_WORKSPACE/sigbus.patch"
+          fi
+          git --no-pager diff --stat || true
+
+          # memfd_create: NDK API 30+ has it natively, drop the __TERMUX__ guard
+          sed -i \
+            's/#if defined(HAVE_MEMFD_CREATE) \&\& !defined __TERMUX__/#if defined(HAVE_MEMFD_CREATE)/' \
+            src/util/anon_file.c || true
+
+      - name: Stage libdrm + X11 + xcb headers into a workspace include dir
+        run: |
+          set -euo pipefail
+          # meson strips -I/usr/include* from pkg-config Cflags, and putting
+          # those paths on the NDK command line would shadow bionic headers.
+          # Stage everything into one workspace-local tree so meson keeps the
+          # path and bionic stays untouched.
+          DEST="$GITHUB_WORKSPACE/mesa-src/external-include"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+
+          # ---- libdrm: flat headers ----
+          cp /usr/include/xf86drm.h     "$DEST/"
+          cp /usr/include/xf86drmMode.h "$DEST/"
+          cp /usr/include/libdrm/*.h    "$DEST/"
+
+          # ---- X11 (keeps X11/ prefix) ----
+          cp -r /usr/include/X11 "$DEST/"
+
+          # ---- xcb (keeps xcb/ prefix) ----
+          cp -r /usr/include/xcb "$DEST/"
+
+          echo "==== $DEST (top level) ===="
+          ls -la "$DEST"
+          echo "==== X11 sample ===="
+          ls "$DEST/X11" | head -20
+          echo "==== xcb sample ===="
+          ls "$DEST/xcb" | head -20
+          echo "==== sanity: the three headers that were failing ===="
+          for h in xf86drm.h X11/Xlib.h xcb/xcb.h; do
+            if [[ -f "$DEST/$h" ]]; then
+              echo "OK: $DEST/$h"
+            else
+              echo "ERROR: $DEST/$h MISSING"
+              exit 1
+            fi
+          done
+
+      - name: Build host tools (mesa_clc, vtn_bindgen2, panfrost_compile)
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+          meson setup build-host \
+              -Dplatforms=[] \
+              -Dgallium-drivers=[] \
+              -Dvulkan-drivers=[] \
+              -Dtools=panfrost \
+              -Dprecomp-compiler=enabled \
+              -Dinstall-precomp-compiler=true \
+              -Dllvm=enabled \
+              -Dmesa-clc=enabled -Dinstall-mesa-clc=true
+
+          ninja -C build-host \
+            src/compiler/clc/mesa_clc \
+            src/compiler/spirv/vtn_bindgen2 \
+            src/panfrost/clc/panfrost_compile
+
+          ln -sf "build-host/src/compiler/clc/mesa_clc"       "build-host/src/compiler/clc/mesa-clc"
+          ln -sf "build-host/src/compiler/spirv/vtn_bindgen2" "build-host/src/compiler/spirv/vtn-bindgen2"
+          ln -sf "build-host/src/panfrost/clc/panfrost_compile" \
+                 "build-host/src/compiler/spirv/panfrost-compile"
+
+          echo "==== Host tools built ===="
+          ls -lh build-host/src/compiler/clc/mesa_clc
+          ls -lh build-host/src/compiler/spirv/vtn_bindgen2
+          ls -lh build-host/src/panfrost/clc/panfrost_compile
+
+      - name: Generate pkg-config shims for Android
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${ANDROID_NDK_LATEST_HOME:-}" && -d "$ANDROID_NDK_LATEST_HOME" ]]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          else
+            NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+
+          if [[ ! -d "$TOOLCHAIN" ]]; then
+            echo "ERROR: NDK toolchain not found at $TOOLCHAIN"
+            exit 1
+          fi
+
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          INC="-I${MESON_WORKING_DIR}/external-include"
+          mkdir -p shims
+
+          "$TOOLCHAIN/bin/llvm-ar" cr shims/librt.a
+
+          # Every shim gets the same Cflags so mesa can find the staged
+          # headers regardless of which dep triggers the include.
+
+          cat > shims/libdrm.pc <<EOF
+          Name: libdrm
+          Description: libdrm (Android shim)
+          Version: 2.5
+          Libs: -ldrm
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/x11-xcb.pc <<EOF
+          Name: x11-xcb
+          Description: x11-xcb (Android shim)
+          Version: 1.15
+          Libs: -lX11-xcb
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/xrandr.pc <<EOF
+          Name: xrandr
+          Description: xrandr (Android shim)
+          Version: 1.15
+          Libs: -lXrandr
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/x11.pc <<EOF
+          Name: x11
+          Description: x11 (Android shim)
+          Version: 1.8
+          Libs: -lX11
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/xext.pc <<EOF
+          Name: xext
+          Description: xext (Android shim)
+          Version: 1.3
+          Libs: -lXext
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/xshmfence.pc <<EOF
+          Name: xshmfence
+          Description: xshmfence (Android shim)
+          Version: 1.3
+          Libs: -lxshmfence
+          Cflags: ${INC}
+          EOF
+
+          cat > shims/android.hardware.graphics.mapper.pc <<EOF
+          Name: android.hardware.graphics.mapper
+          Description: android.hardware.graphics.mapper (Android shim)
+          Version: 4.0
+          Libs: -landroid.hardware.graphics.mapper
+          Cflags: ${INC}
+          EOF
+
+          for lib in \
+              xcb xcb-randr xcb-dri2 xcb-dri3 xcb-present xcb-shm xcb-sync \
+              xcb-xfixes xcb-keysyms xcb-shape xcb-render xcb-renderutil \
+              xcb-xkb xcb-icccm xcb-image xcb-util \
+              gralloctypes hidlbase utils cutils hardware log sync \
+              nativewindow ui
+          do
+            cat > "shims/$lib.pc" <<EOF
+          Name: $lib
+          Description: $lib (Android shim)
+          Version: 1.15
+          Libs: -l$lib
+          Cflags: ${INC}
+          EOF
+          done
+
+          echo "==== shims directory ===="
+          ls -la shims
+          echo "==== libdrm.pc ===="
+          cat shims/libdrm.pc
+          echo "==== x11-xcb.pc ===="
+          cat shims/x11-xcb.pc
+          echo "==== xcb.pc ===="
+          cat shims/xcb.pc
+
+          echo "==== pkg-config sanity ===="
+          PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags libdrm
+          PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags x11-xcb
+          PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags xcb
+          # ^ all three should print: -I${WORKSPACE}/mesa-src/external-include
+
+      - name: Generate Android cross file
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${ANDROID_NDK_LATEST_HOME:-}" && -d "$ANDROID_NDK_LATEST_HOME" ]]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          else
+            NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export MESON_WORKING_DIR ANDROID_NDK_HOME="$NDK"
+
+          API=30
+
+          cat > android.toml <<EOF
+          [binaries]
+          c         = '${TOOLCHAIN}/bin/aarch64-linux-android${API}-clang'
+          cpp       = '${TOOLCHAIN}/bin/aarch64-linux-android${API}-clang++'
+          ar        = '${TOOLCHAIN}/bin/llvm-ar'
+          strip     = '${TOOLCHAIN}/bin/llvm-strip'
+          ld        = '${TOOLCHAIN}/bin/ld.lld'
+          pkgconfig = '/usr/bin/pkg-config'
+
+          [host_machine]
+          system     = 'android'
+          cpu_family = 'aarch64'
+          cpu        = 'aarch64'
+          endian     = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+
+          [built-in options]
+          c_args        = ['-I${MESON_WORKING_DIR}/external-include']
+          cpp_args      = ['-I${MESON_WORKING_DIR}/external-include']
+          c_link_args   = ['-L${MESON_WORKING_DIR}/shims']
+          cpp_link_args = ['-L${MESON_WORKING_DIR}/shims']
+          EOF
+
+          envsubst < android.toml > /tmp/android_wrapper.toml
+
+          echo "==== /tmp/android_wrapper.toml ===="
+          cat /tmp/android_wrapper.toml
+
+      - name: Configure meson (cross-compile, Winlator target)
+        working-directory: mesa-src
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
+        run: |
+          set -euo pipefail
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
+
+          rm -rf build
+
+          meson setup build \
+              --cross-file /tmp/android_wrapper.toml \
+              -Dbuildtype=${{ matrix.build-type }} \
+              -Dplatforms=android,x11 \
+              -Dandroid-stub=true \
+              -Dandroid-libbacktrace=disabled \
+              -Dplatform-sdk-version=30 \
+              -Dglx=disabled \
+              -Dgbm=disabled \
+              -Degl=disabled \
+              -Dopengl=false \
+              -Dgles1=disabled \
+              -Dgles2=disabled \
+              -Dglvnd=disabled \
+              -Dvalgrind=disabled \
+              -Dgallium-drivers= \
+              -Dshared-glapi=disabled \
+              -Dzstd=disabled \
+              -Dmesa-clc=system \
+              -Dprecomp-compiler=system \
+              -Dvulkan-drivers=panfrost \
+              -Dllvm=disabled \
+              -Dstrip=false \
+              -Dpanfrost-kmds=kbase,panthor
+
+      - name: Verify external-include is on the compile command line
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+          if grep -q "$GITHUB_WORKSPACE/mesa-src/external-include" build/build.ninja; then
+            echo "OK: external-include IS on the compile line"
+            grep -m1 "external-include" build/build.ninja | head -c 400
+            echo
+          else
+            echo "ERROR: external-include is NOT in build.ninja"
+            echo "---- search for -I paths in build.ninja ----"
+            grep -o '\-I[^ ]*' build/build.ninja | sort -u | head -40
+            exit 1
+          fi
+
+      - name: Compile libvulkan_panfrost.so
+        working-directory: mesa-src
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
+        run: |
+          set -euo pipefail
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
+
+          ninja -C build src/panfrost/vulkan/libvulkan_panfrost.so
+
+      - name: Package tarball (${{ matrix.build-type }})
+        run: |
+          set -euo pipefail
+          OUT="winlator-out-${{ matrix.build-type }}"
+          mkdir -p "$OUT/lib" "$OUT/share/vulkan/icd.d"
+
+          cp mesa-src/build/src/panfrost/vulkan/libvulkan_panfrost.so "$OUT/lib/"
+
+          cat > "$OUT/share/vulkan/icd.d/panfrost_icd.aarch64.json" <<'JSON'
+          {
+              "file_format_version": "1.0.1",
+              "ICD": {
+                  "library_path": "libvulkan_panfrost.so",
+                  "api_version": "1.4.354",
+                  "library_arch": "64"
+              }
+          }
+          JSON
+
+          echo "==== ICD ===="
+          cat "$OUT/share/vulkan/icd.d/panfrost_icd.aarch64.json"
+          echo "==== output tree ===="
+          find "$OUT" -type f
+
+          TARBALL="panvk-winlator-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz"
+          tar -czvf "$TARBALL" -C "$OUT" .
+          ls -lh "$TARBALL"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: panvk-winlator-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}
+          path: |
+            winlator-out-${{ matrix.build-type }}/
+            panvk-winlator-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: find artifacts -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: "${{ needs.prepare.outputs.tag }} — PanVK Winlator build ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }} UTC"
+          body: |
+            ## PanVK for Winlator (aarch64, cross-compile via Android NDK)
+
+            Cross-compiled on `ubuntu-latest` (x86_64) using the Android NDK
+            toolchain (`aarch64-linux-android30-clang`), targeting the
+            Android ABI used by Winlator and similar Android Linux containers.
+
+            **Build date (UTC):** `${{ needs.prepare.outputs.date }}`
+            **Build time (UTC):** `${{ needs.prepare.outputs.time }}`
+            **Commit:** `${{ github.sha }}`
+            **Build types:** `${{ needs.prepare.outputs.types }}`
+
+            ### Files
+            - `panvk-winlator-aarch64-debugoptimized-*.tar.gz`
+            - `panvk-winlator-aarch64-release-*.tar.gz`
+            - `libvulkan_panfrost.so` — Vulkan driver
+            - `panfrost_icd.aarch64.json` — ICD manifest
+
+            ### Install (Winlator / Android container)
+            ```bash
+            tar -xzf panvk-winlator-aarch64-release-*.tar.gz -C /path/to/rootfs
+            export VK_ICD_FILENAMES=/path/to/rootfs/share/vulkan/icd.d/panfrost_icd.aarch64.json
+            export LD_LIBRARY_PATH=/path/to/rootfs/lib:$LD_LIBRARY_PATH
+            ```
+          files: |
+            artifacts/*.tar.gz
+            artifacts/**/libvulkan_panfrost.so
+            artifacts/**/panfrost_icd.aarch64.json
+          overwrite_files: true
+          generate_release_notes: true
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
