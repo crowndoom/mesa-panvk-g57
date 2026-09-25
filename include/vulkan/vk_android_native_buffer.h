@@ -17,7 +17,14 @@
  * system rather the build target.
  */
 
-#if defined(__ANDROID__) || defined(ANDROID)
+#if (defined(__ANDROID__) || defined(ANDROID)) && defined(__has_include) && __has_include(<cutils/native_handle.h>)
+/* PATCH (Termux): the Termux toolchain targets Android (__ANDROID__ is
+ * defined) but ships no AOSP <cutils/native_handle.h>. Only take the
+ * native branch when the header is actually available (NDK/AOSP builds
+ * via android-stub); otherwise fall through to the portable
+ * buffer_handle_t below. Forcing the include breaks Termux builds;
+ * forcing it off breaks builds where android_stub headers are also
+ * included (buffer_handle_t collision). */
 
 #include <cutils/native_handle.h>
 #if ANDROID_API_LEVEL < 28
