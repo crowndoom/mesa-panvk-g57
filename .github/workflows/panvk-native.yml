@@ -49,6 +49,23 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved tag: $TAG"
 
+      - name: Pull Termux container image (with retry)
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if docker pull termux/termux-docker:aarch64; then
+              docker images termux/termux-docker:aarch64
+              break
+            fi
+            echo "docker pull attempt $i failed, retrying in 15s..."
+            sleep 15
+            if [[ $i -eq 3 ]]; then
+              echo "docker pull failed after 3 attempts" >&2
+              docker info || true
+              exit 1
+            fi
+          done
+
       - name: Build PanVK inside native Termux container
         run: |
           set -euo pipefail
@@ -64,7 +81,17 @@ jobs:
               set -euo pipefail
               export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
 
-              pkg update -y
+              for i in 1 2 3; do
+                if pkg update; then
+                  break
+                fi
+                echo "pkg update attempt $i failed, retrying in 10s..."
+                sleep 10
+                if [[ $i -eq 3 ]]; then
+                  echo "pkg update failed after 3 attempts" >&2
+                  exit 1
+                fi
+              done
 
               pkg install -y \
                 git clang lld  ninja python python-pip pkg-config \

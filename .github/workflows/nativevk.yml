@@ -162,8 +162,10 @@ jobs:
               mkdir -p "$TMPDIR"
               cd "$TMPDIR"
               rm -rf mesa-panvk
-              git clone --depth 1 https://github.com/xodiosx/mesa-panvk-g57.git mesa-panvk
+              # Build THIS repo (frag-extres + debug-gate fix), not upstream.
+              cp -a /patch mesa-panvk
               cd mesa-panvk
+              rm -rf termux-out-*
 
               # ── Apply sigbus.patch from repo root (mounted at /patch) ──
               if [[ -f /patch/sigbus.patch ]]; then
