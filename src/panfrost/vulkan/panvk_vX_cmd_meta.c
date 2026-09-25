@@ -19,6 +19,8 @@
 #include "libpan_copy.h"
 #include "libpan_dgc.h"
 
+#include <stdlib.h>
+
 static bool
 copy_to_image_use_gfx_pipeline(struct panvk_image *dst_img)
 {
@@ -572,7 +574,8 @@ panvk_per_arch(CmdCopyImageToBuffer2)(
             .dstBuffer = pCopyImageToBufferInfo->dstBuffer,
             .regionCount = 1, .pRegions = &region,
          };
-         fprintf(stderr, "PANVKDBG COPY_RAW SRC=%016llx DST=%016llx bytes=%llu\n",
+         if (getenv("PANVK_G57_DEBUG"))
+            fprintf(stderr, "PANVKDBG COPY_RAW SRC=%016llx DST=%016llx bytes=%llu\n",
                  (unsigned long long)alias.vk.device_address,
                  (unsigned long long)panvk_buffer_gpu_ptr(dst, r->bufferOffset),
                  (unsigned long long)size);

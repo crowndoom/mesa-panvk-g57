@@ -34,6 +34,16 @@
 #include "vk_descriptor_update_template.h"
 #include "vk_format.h"
 
+#include <stdlib.h>
+
+/* G57 perf gate: per-batch descriptor dumps are opt-in via
+ * PANVK_G57_DEBUG=1. */
+static inline bool
+panvk_g57_cmd_debug_enabled(void)
+{
+   return getenv("PANVK_G57_DEBUG") != NULL;
+}
+
 static VkResult
 panvk_cmd_prepare_fragment_job(struct panvk_cmd_buffer *cmdbuf, uint64_t fbd)
 {
@@ -75,7 +85,8 @@ panvk_per_arch(cmd_close_batch)(struct panvk_cmd_buffer *cmdbuf)
 
    assert(batch);
 
-   fprintf(stderr, "PANVKDBG close_batch: fb=%llx vtc=%llx frag=%llx jobs=%u\n",
+   if (panvk_g57_cmd_debug_enabled())
+      fprintf(stderr, "PANVKDBG close_batch: fb=%llx vtc=%llx frag=%llx jobs=%u\n",
            (unsigned long long)batch->fb.desc.gpu,
            (unsigned long long)batch->vtc_jc.first_job,
            (unsigned long long)batch->frag_jc.first_job,
@@ -210,7 +221,7 @@ panvk_per_arch(cmd_close_batch)(struct panvk_cmd_buffer *cmdbuf)
          };
 tagged_fbd_ptr |= GENX(pan_emit_fb_desc)(&fbd_info, &fb_descs);
 
-          {
+          if (panvk_g57_cmd_debug_enabled()) {
 const uint32_t *w = (const uint32_t *)fbd.cpu;
               fprintf(stderr,
                       "PANVKDBG fbd l=%u w0=%08x w1=%08x w2=%08x w3=%08x "

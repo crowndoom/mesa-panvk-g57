@@ -41,6 +41,8 @@
 #include "vk_meta.h"
 #include "vk_pipeline_layout.h"
 
+#include <stdlib.h>
+
 static bool
 has_depth_att(struct panvk_cmd_buffer *cmdbuf)
 {
@@ -1450,7 +1452,8 @@ panvk_cmd_draw(struct panvk_cmd_buffer *cmdbuf, struct panvk_draw_data *draw)
    const struct panvk_shader_variant *vs = panvk_shader_hw_variant(cmdbuf->state.gfx.vs.shader);
    VkResult result;
 
-   fprintf(stderr, "PANVKDBG panvk_cmd_draw: vs=%p cur_batch=%p\n",
+   if (getenv("PANVK_G57_DEBUG"))
+      fprintf(stderr, "PANVKDBG panvk_cmd_draw: vs=%p cur_batch=%p\n",
            (void *)vs, (void *)cmdbuf->cur_batch);
    /* If there's no vertex shader, we can skip the draw. */
    if (!panvk_priv_mem_check_alloc(vs->rsd))
@@ -2512,7 +2515,7 @@ panvk_v9_draw(struct panvk_cmd_buffer *cmdbuf, struct panvk_draw_info *info)
                        0, 0, &job, false);
        util_dynarray_append(&batch->jobs, job.cpu);
 
-       {
+       if (getenv("PANVK_G57_DEBUG")) {
           const uint32_t *jw = (const uint32_t *)job.cpu;
           fprintf(stderr,
                   "PANVKDBG malloc l=%u w0=%08x w1=%08x w2=%08x w3=%08x "

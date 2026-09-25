@@ -32,6 +32,8 @@
 #include "vk_object.h"
 #include "vk_util.h"
 
+#include <stdlib.h>
+
 bool
 panvk_image_can_use_afbc(
    struct panvk_physical_device *phys_dev, VkFormat fmt,
@@ -1393,8 +1395,9 @@ panvk_image_bind(struct panvk_device *dev,
       for (unsigned plane = 0; plane < image->plane_count; plane++) {
          panvk_image_plane_bind_mem(dev, &image->planes[plane], mem, offset);
 
-         fprintf(stderr,
-                 "PANVKDBG IMAGE_PLANE img=%p plane=%u base=%016llx "
+         if (getenv("PANVK_G57_DEBUG"))
+            fprintf(stderr,
+                    "PANVKDBG IMAGE_PLANE img=%p plane=%u base=%016llx "
                  "mem_offset=%016llx\n",
                  (void *)image,
                  plane,

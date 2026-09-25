@@ -1599,24 +1599,28 @@ kbase_kmod_import_user_buffer(struct pan_kmod_dev *dev, void *ptr,
       kbase_dev->userbuf_gpu_ptrs[idx] = kbase_bo->gpu_mapping;
       kbase_dev->userbuf_sizes[idx] = bo_size;
 
-      fprintf(stderr,
-              "PANVKDBG USERBUF REGISTER gpu=%016" PRIx64
-              " cpu=%p gpumap=%p size=%" PRIu64
-              " count=%u\n",
-              kbase_bo->gpu_va,
-              kbase_bo->cpu_ptr,
-              kbase_bo->gpu_mapping,
-              bo_size,
-              kbase_dev->userbuf_count);
+      if (getenv("PANVK_G57_DEBUG")) {
+         fprintf(stderr,
+                 "PANVKDBG USERBUF REGISTER gpu=%016" PRIx64
+                 " cpu=%p gpumap=%p size=%" PRIu64
+                 " count=%u\n",
+                 kbase_bo->gpu_va,
+                 kbase_bo->cpu_ptr,
+                 kbase_bo->gpu_mapping,
+                 bo_size,
+                 kbase_dev->userbuf_count);
+      }
    } else {
       mesa_loge("kbase: USER_BUFFER diagnostic registry full");
    }
 
-   fprintf(stderr,
-           "PANVKDBG USERBUF READY cpu=%p gpu=%016" PRIx64
-           " gpu_map=%p size=%" PRIu64 "\n",
-           kbase_bo->cpu_ptr, kbase_bo->gpu_va,
-           kbase_bo->gpu_mapping, bo_size);
+   if (getenv("PANVK_G57_DEBUG")) {
+      fprintf(stderr,
+              "PANVKDBG USERBUF READY cpu=%p gpu=%016" PRIx64
+              " gpu_map=%p size=%" PRIu64 "\n",
+              kbase_bo->cpu_ptr, kbase_bo->gpu_va,
+              kbase_bo->gpu_mapping, bo_size);
+   }
 
    return &kbase_bo->base;
 }
@@ -2098,10 +2102,12 @@ kbase_kmod_bo_free(struct pan_kmod_bo *bo)
 
          kbase_dev->userbuf_count--;
 
-         fprintf(stderr,
-                 "PANVKDBG USERBUF UNREGISTER gpu=%016" PRIx64
-                 " count=%u\n",
-                 kbase_bo->gpu_va, kbase_dev->userbuf_count);
+         if (getenv("PANVK_G57_DEBUG")) {
+            fprintf(stderr,
+                    "PANVKDBG USERBUF UNREGISTER gpu=%016" PRIx64
+                    " count=%u\n",
+                    kbase_bo->gpu_va, kbase_dev->userbuf_count);
+         }
          break;
       }
    }

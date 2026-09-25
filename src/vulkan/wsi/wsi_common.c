@@ -51,6 +51,14 @@
 
 uint64_t WSI_DEBUG;
 
+/* G57 (PanVK Mali-G57 downstream): per-frame PRESENT diagnostics are
+ * opt-in via PANVK_G57_DEBUG=1 so Termux/X11 presentation stays fast. */
+static inline bool
+wsi_g57_debug_enabled(void)
+{
+   return getenv("PANVK_G57_DEBUG") != NULL;
+}
+
 static const struct debug_control debug_control[] = {
    { "buffer",       WSI_DEBUG_BUFFER },
    { "sw",           WSI_DEBUG_SW },
@@ -1432,8 +1440,9 @@ wsi_CreateSwapchainKHR(VkDevice _device,
    ICD_FROM_HANDLE(VkIcdSurfaceBase, surface, pCreateInfo->surface);
    struct wsi_device *wsi_device = device->physical->wsi_device;
 
-   fprintf(stderr,
-           "PANVKDBG PRESENT CREATE_ENTER surface=%p format=%d "
+   if (wsi_g57_debug_enabled())
+      fprintf(stderr,
+              "PANVKDBG PRESENT CREATE_ENTER surface=%p format=%d "
            "extent=%ux%u minImages=%u mode=%d sw=%d\\n",
            (void *)(uintptr_t)pCreateInfo->surface,
            pCreateInfo->imageFormat,
@@ -2290,15 +2299,17 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
    VK_FROM_HANDLE(wsi_swapchain, swapchain, pAcquireInfo->swapchain);
    VK_FROM_HANDLE(vk_device, device, _device);
 
-   fprintf(stderr,
-           "PANVKDBG PRESENT ACQUIRE_ENTER swapchain=%p timeout=%" PRIu64 "\\n",
+   if (wsi_g57_debug_enabled())
+      fprintf(stderr,
+              "PANVKDBG PRESENT ACQUIRE_ENTER swapchain=%p timeout=%" PRIu64 "\\n",
            (void *)swapchain, pAcquireInfo->timeout);
 
    VkResult result = swapchain->acquire_next_image(swapchain, pAcquireInfo,
                                                    pImageIndex);
 
-   fprintf(stderr,
-           "PANVKDBG PRESENT ACQUIRE_RET swapchain=%p result=%d index=%u\\n",
+   if (wsi_g57_debug_enabled())
+      fprintf(stderr,
+              "PANVKDBG PRESENT ACQUIRE_RET swapchain=%p result=%d index=%u\\n",
            (void *)swapchain, result,
            (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) ?
               *pImageIndex : UINT32_MAX);
@@ -2462,8 +2473,9 @@ wsi_common_queue_present(const struct wsi_device *wsi,
 {
    struct vk_device *dev = queue->base.device;
 
-   fprintf(stderr,
-           "PANVKDBG PRESENT QUEUE_ENTER queue=%p swapchainCount=%u waitCount=%u\\n",
+   if (wsi_g57_debug_enabled())
+      fprintf(stderr,
+              "PANVKDBG PRESENT QUEUE_ENTER queue=%p swapchainCount=%u waitCount=%u\\n",
            (void *)queue,
            pPresentInfo->swapchainCount,
            pPresentInfo->waitSemaphoreCount);
@@ -2924,8 +2936,9 @@ wsi_common_queue_present(const struct wsi_device *wsi,
       if (regions && regions->pRegions)
          region = &regions->pRegions[i];
 
-      fprintf(stderr,
-              "PANVKDBG PRESENT BACKEND_ENTER i=%u swapchain=%p "
+      if (wsi_g57_debug_enabled())
+         fprintf(stderr,
+                 "PANVKDBG PRESENT BACKEND_ENTER i=%u swapchain=%p "
               "image=%u present_id=%" PRIu64 "\\n",
               i, (void *)swapchain, image_index,
               image_signal_infos[i].present_id);
@@ -2934,8 +2947,9 @@ wsi_common_queue_present(const struct wsi_device *wsi,
                                             image_signal_infos[i].present_id,
                                             region);
 
-      fprintf(stderr,
-              "PANVKDBG PRESENT BACKEND_RET i=%u image=%u result=%d\\n",
+      if (wsi_g57_debug_enabled())
+         fprintf(stderr,
+                 "PANVKDBG PRESENT BACKEND_RET i=%u image=%u result=%d\\n",
               i, image_index, results[i]);
 
       if (results[i] != VK_SUCCESS && results[i] != VK_SUBOPTIMAL_KHR)
@@ -3191,8 +3205,9 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
    if (info->alloc_shm)
       sw_host_ptr = info->alloc_shm(image, info->linear_size);
 
-   fprintf(stderr,
-           "PANVKDBG WSI_BLIT_SHM alloc_shm=%p sw_host_ptr=%p "
+   if (wsi_g57_debug_enabled())
+      fprintf(stderr,
+              "PANVKDBG WSI_BLIT_SHM alloc_shm=%p sw_host_ptr=%p "
            "size=%llu\n",
            (void *)info->alloc_shm,
            sw_host_ptr,
@@ -3664,8 +3679,9 @@ wsi_configure_cpu_image(const struct wsi_swapchain *chain,
    assert(chain->blit.type == WSI_SWAPCHAIN_NO_BLIT ||
           chain->blit.type == WSI_SWAPCHAIN_BUFFER_BLIT);
 
-   fprintf(stderr,
-           "PANVKDBG WSI_CPU_CONFIG blit=%d alloc_shm=%p "
+   if (wsi_g57_debug_enabled())
+      fprintf(stderr,
+              "PANVKDBG WSI_CPU_CONFIG blit=%d alloc_shm=%p "
            "has_import_host=%d wants_linear=%d\n",
            chain->blit.type,
            (void *)params->alloc_shm,
