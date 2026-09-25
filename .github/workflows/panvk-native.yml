@@ -93,6 +93,11 @@ jobs:
                 fi
               done
 
+              # Heal the stale base image: installed packages predate the
+              # mirror metadata (e.g. ncurses vs ncurses-ui-libs skew),
+              # which makes pkg install fail with "held broken packages".
+              pkg upgrade -y
+
               pkg install -y \
                 git clang lld  ninja python python-pip pkg-config \
                 bison flex cmake glslang shaderc vulkan-headers \
