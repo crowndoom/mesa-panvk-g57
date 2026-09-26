@@ -377,6 +377,17 @@ jobs:
           PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags xcb
           # ^ all three should print: -I${WORKSPACE}/mesa-src/external-include
 
+          # Android has no X11/DRM dev libraries, so the -l flags in the
+          # shims above can never resolve at link time ("unable to find
+          # library -ldrm ..."). Blank them: headers (Cflags) are all the
+          # cross build needs from these deps. The X11/DRM symbols stay as
+          # dynamic references and resolve at runtime from the Winlator
+          # rootfs userland (real libX11/libxcb/libdrm), paired with
+          # LDFLAGS=-Wl,--unresolved-symbols=ignore-all at configure time.
+          sed -i 's/^Libs:.*/Libs:/' shims/*.pc
+          echo "==== shims Libs blanked ===="
+          grep -H '^Libs:' shims/*.pc | head -40
+
       - name: Generate Android cross file
         working-directory: mesa-src
         run: |
@@ -427,6 +438,10 @@ jobs:
         working-directory: mesa-src
         env:
           PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
+          # X11/DRM symbols have no link-time libs on Android (see shims
+          # step); let them stay dynamic for the Winlator rootfs userland.
+          # Must override meson internal -Wl,--no-undefined for this build.
+          LDFLAGS: -Wl,--unresolved-symbols=ignore-all
         run: |
           set -euo pipefail
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
