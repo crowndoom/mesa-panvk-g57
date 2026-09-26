@@ -73,6 +73,11 @@ static int vk_android_hal_open(const struct hw_module_t *mod, const char *id,
 
 static_assert(HWVULKAN_DISPATCH_MAGIC == ICD_LOADER_MAGIC, "");
 
+/* Downstream PanVK G57 provides its own HAL module
+ * (src/panfrost/vulkan/panvk_android_hal_bridge.c, selected with
+ * -DPANVK_OWN_ANDROID_HAL); skip the generic one so HAL_MODULE_INFO_SYM
+ * isn't defined twice in libvulkan_panfrost.so. */
+#ifndef PANVK_OWN_ANDROID_HAL
 PUBLIC struct hwvulkan_module_t HAL_MODULE_INFO_SYM = {
    .common =
       {
@@ -88,6 +93,7 @@ PUBLIC struct hwvulkan_module_t HAL_MODULE_INFO_SYM = {
             },
       },
 };
+#endif /* !PANVK_OWN_ANDROID_HAL */
 
 static int
 vk_android_hal_close(struct hw_device_t *dev)

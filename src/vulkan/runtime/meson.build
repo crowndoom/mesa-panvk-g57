@@ -198,12 +198,22 @@ vulkan_lite_runtime_header_gen_deps = declare_dependency(
 
 vulkan_lite_runtime_deps += vulkan_lite_runtime_header_gen_deps
 
+# Downstream PanVK G57 always links its own Android HAL module
+# (src/panfrost/vulkan/panvk_android_hal_bridge.c) into libvulkan_panfrost.so.
+# When PanVK is built, skip the generic HAL_MODULE_INFO_SYM here so the two
+# don't collide at link time. Assumes PanVK is the only Vulkan driver in the
+# build (true for all G57 workflows: -Dvulkan-drivers=panfrost).
+vulkan_lite_runtime_c_args = [c_msvc_compat_args, soong_compat_c_args, '-DMESA_VK_LOG=@0@'.format(get_option('debug').to_int())]
+if with_panfrost_vk
+  vulkan_lite_runtime_c_args += '-DPANVK_OWN_ANDROID_HAL'
+endif
+
 libvulkan_lite_runtime = static_library(
   'vulkan_lite_runtime',
   vulkan_lite_runtime_files,
   include_directories : [inc_include, inc_src],
   dependencies : vulkan_lite_runtime_deps,
-  c_args : [c_msvc_compat_args, soong_compat_c_args, '-DMESA_VK_LOG=@0@'.format(get_option('debug').to_int())],
+  c_args : vulkan_lite_runtime_c_args,
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
