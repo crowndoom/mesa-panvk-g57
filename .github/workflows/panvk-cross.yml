@@ -397,16 +397,26 @@ jobs:
           sudo apt-get update || true
           mkdir -p "$GITHUB_WORKSPACE/aarch64-sysroot"
           cd "$GITHUB_WORKSPACE/aarch64-sysroot"
-          for pkg in libdrm2 libdrm-dev libx11-6 libx11-dev libx11-xcb1 \
-              libxcb1 libxcb1-dev libxcb-dri3-0 libxcb-dri3-dev \
-              libxcb-present0 libxcb-present-dev libxcb-xfixes0 libxcb-xfixes-dev \
-              libxcb-sync1 libxcb-sync-dev libxcb-randr0 libxcb-randr-dev \
-              libxcb-shm0 libxcb-shm-dev libxcb-keysyms1 libxcb-keysyms-dev \
-              libxshmfence1 libxshmfence-dev libxrandr2 libxrandr-dev \
-              libxext6 libxext-dev; do
+          # Runtime debs only (-dev names vary per lib and break the loop,
+          # e.g. libxcb-xfixes0-dev vs libxcb-xfixes-dev). Headers already come
+          # from the staged external-include dir; here we only need linkable
+          # files, so create the libfoo.so linker names ourselves.
+          for pkg in libdrm2 libx11-6 libx11-xcb1 libxcb1 libxcb-dri3-0 \
+              libxcb-present0 libxcb-xfixes0 libxcb-sync1 libxcb-randr0 \
+              libxcb-shm0 libxcb-keysyms1 libxshmfence1 libxrandr2 libxext6; do
             apt-get download "$pkg:arm64"
           done
           for deb in *.deb; do dpkg -x "$deb" .; done
+          LDIR=usr/lib/aarch64-linux-gnu
+          for lib in drm X11 Xext X11-xcb xcb xcb-dri3 xcb-present xcb-xfixes \
+              xcb-sync xcb-randr xcb-shm xshmfence xcb-keysyms Xrandr; do
+            target=$(ls "$LDIR/lib${lib}.so."* 2>/dev/null | sort -V | tail -1 || true)
+            if [ -n "$target" ]; then
+              ln -sf "$(basename "$target")" "$LDIR/lib${lib}.so"
+            else
+              echo "WARNING: no sysroot file for -l$lib"
+            fi
+          done
           echo "==== sysroot libs ===="
           ls usr/lib/aarch64-linux-gnu/ | grep -E '^lib(X11|xcb|drm|xshmfence|xrandr|Xext)' | head -40
 
