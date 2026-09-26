@@ -390,7 +390,11 @@ jobs:
           CODENAME="$(. /etc/os-release; echo "$VERSION_CODENAME")"
           echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $CODENAME main universe" \
             | sudo tee /etc/apt/sources.list.d/arm64-ports.list
-          sudo apt-get update
+          # security.ubuntu.com has no arm64 (it lives on ports), so a
+          # full update always 404s there. The ports indexes we need do
+          # download fine - tolerate the exit code; real failures surface
+          # as "Unable to locate package" at download time below.
+          sudo apt-get update || true
           mkdir -p "$GITHUB_WORKSPACE/aarch64-sysroot"
           cd "$GITHUB_WORKSPACE/aarch64-sysroot"
           for pkg in libdrm2 libdrm-dev libx11-6 libx11-dev libx11-xcb1 \
