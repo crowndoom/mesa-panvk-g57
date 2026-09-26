@@ -377,16 +377,34 @@ jobs:
           PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags xcb
           # ^ all three should print: -I${WORKSPACE}/mesa-src/external-include
 
-          # Android has no X11/DRM dev libraries, so the -l flags in the
-          # shims above can never resolve at link time ("unable to find
-          # library -ldrm ..."). Blank them: headers (Cflags) are all the
-          # cross build needs from these deps. The X11/DRM symbols stay as
-          # dynamic references and resolve at runtime from the Winlator
-          # rootfs userland (real libX11/libxcb/libdrm), paired with
-          # LDFLAGS=-Wl,--unresolved-symbols=ignore-all at configure time.
-          sed -i 's/^Libs:.*/Libs:/' shims/*.pc
-          echo "==== shims Libs blanked ===="
-          grep -H '^Libs:' shims/*.pc | head -40
+
+      - name: Fetch arm64 X11/DRM link sysroot (real libs, Debian ports)
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+          # The NDK has no X11/DRM libraries, but the link needs real ones
+          # (strict --no-undefined stays on). This mirrors Mesa's official
+          # arm64 cross pattern: link Debian arm64 libs, run against the
+          # Winlator rootfs userland libs (same SONAMEs).
+          sudo dpkg --add-architecture arm64
+          CODENAME="$(. /etc/os-release; echo "$VERSION_CODENAME")"
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports $CODENAME main universe" \
+            | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update
+          mkdir -p "$GITHUB_WORKSPACE/aarch64-sysroot"
+          cd "$GITHUB_WORKSPACE/aarch64-sysroot"
+          for pkg in libdrm2 libdrm-dev libx11-6 libx11-dev libx11-xcb1 \
+              libxcb1 libxcb1-dev libxcb-dri3-0 libxcb-dri3-dev \
+              libxcb-present0 libxcb-present-dev libxcb-xfixes0 libxcb-xfixes-dev \
+              libxcb-sync1 libxcb-sync-dev libxcb-randr0 libxcb-randr-dev \
+              libxcb-shm0 libxcb-shm-dev libxcb-keysyms1 libxcb-keysyms-dev \
+              libxshmfence1 libxshmfence-dev libxrandr2 libxrandr-dev \
+              libxext6 libxext-dev; do
+            apt-get download "$pkg:arm64"
+          done
+          for deb in *.deb; do dpkg -x "$deb" .; done
+          echo "==== sysroot libs ===="
+          ls usr/lib/aarch64-linux-gnu/ | grep -E '^lib(X11|xcb|drm|xshmfence|xrandr|Xext)' | head -40
 
       - name: Generate Android cross file
         working-directory: mesa-src
@@ -425,8 +443,8 @@ jobs:
           [built-in options]
           c_args        = ['-I${MESON_WORKING_DIR}/external-include']
           cpp_args      = ['-I${MESON_WORKING_DIR}/external-include']
-          c_link_args   = ['-L${MESON_WORKING_DIR}/shims']
-          cpp_link_args = ['-L${MESON_WORKING_DIR}/shims']
+          c_link_args   = ['-L${MESON_WORKING_DIR}/shims', '-L${GITHUB_WORKSPACE}/aarch64-sysroot/usr/lib/aarch64-linux-gnu']
+          cpp_link_args = ['-L${MESON_WORKING_DIR}/shims', '-L${GITHUB_WORKSPACE}/aarch64-sysroot/usr/lib/aarch64-linux-gnu']
           EOF
 
           envsubst < android.toml > /tmp/android_wrapper.toml
@@ -438,10 +456,10 @@ jobs:
         working-directory: mesa-src
         env:
           PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
-          # X11/DRM symbols have no link-time libs on Android (see shims
-          # step); let them stay dynamic for the Winlator rootfs userland.
-          # Must override meson internal -Wl,--no-undefined for this build.
-          LDFLAGS: -Wl,--unresolved-symbols=ignore-all
+          # Transitive deps of the sysroot shared libs (libXau/libXdmcp)
+          # need not be present: allow those to stay unresolved, while
+          # --no-undefined still guards our own objects.
+          LDFLAGS: -Wl,--allow-shlib-undefined
         run: |
           set -euo pipefail
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
