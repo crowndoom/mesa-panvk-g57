@@ -507,8 +507,22 @@ get_device_heaps(struct panvk_physical_device *device,
    int host_coherent_not_cached_idx = -1;
    int host_cached_not_coherent_idx = -1;
 
+   /* The reported heap is only a number: we have no dedicated VRAM, every
+    * allocation comes straight from system RAM.  Allow the user to advertise a
+    * larger (or smaller) value than the drirc default without rebuilding, e.g.
+    * PANVK_HEAP_PERCENT=1.0.  Values outside (0, 1] are ignored.
+    */
+   float heap_percent = instance->drirc.misc.heap_memory_percent;
+   const char *heap_percent_env = getenv("PANVK_HEAP_PERCENT");
+   if (heap_percent_env && heap_percent_env[0]) {
+      char *end = NULL;
+      float v = strtof(heap_percent_env, &end);
+      if (end != heap_percent_env && v > 0.0f && v <= 1.0f)
+         heap_percent = v;
+   }
+
    const uint64_t heap_size =
-      os_get_gpu_heap_size(instance->drirc.misc.heap_memory_percent,
+      os_get_gpu_heap_size(heap_percent,
                            &instance->drirc.misc.heap_memory_percent);
 
    device->memory.heap_count = 1;
