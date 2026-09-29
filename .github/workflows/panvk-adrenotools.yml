@@ -304,15 +304,27 @@ jobs:
             echo "ERROR: no libdrm.so* produced"
             exit 1
           fi
+          # meson gives libdrm no version/soversion, so it installs a plain
+          # real file libdrm.so (no symlink chain) whose soname is libdrm.so.
+          # The linker records that soname as DT_NEEDED, so the package must
+          # carry the file under exactly that name.
           SONAME="$(readelf -d "$REAL" | awk '/SONAME/ && match($0, /\[[^]]*\]/) { print substr($0, RSTART + 1, RLENGTH - 2) }')"
           SONAME="${SONAME:-$(basename "$REAL")}"
 
           mkdir -p "$GITHUB_WORKSPACE/bionic-libs"
           cp -L "$REAL" "$GITHUB_WORKSPACE/bionic-libs/$SONAME"
-          ln -sf "$SONAME" "$GITHUB_WORKSPACE/bionic-libs/libdrm.so"
+          # Only add the link-name symlink when the soname is *not* already
+          # "libdrm.so"; otherwise ln -sf would point the file at itself and
+          # every readelf on it would fail with ELOOP.
+          if [[ "$SONAME" != "libdrm.so" ]]; then
+            ln -sf "$SONAME" "$GITHUB_WORKSPACE/bionic-libs/libdrm.so"
+          fi
+          # Read back through the real file, never a possibly-broken symlink.
+          READ="$GITHUB_WORKSPACE/bionic-libs/$SONAME"
+          if [[ -L "$READ" ]]; then READ="$(readlink -f "$READ")"; fi
 
-          echo "==== bionic libdrm: $SONAME ===="
-          LIBDRM_ELF="$(readelf -d "$GITHUB_WORKSPACE/bionic-libs/$SONAME")"
+          echo "==== bionic libdrm: $SONAME (from $READ) ===="
+          LIBDRM_ELF="$(readelf -d "$READ")"
           grep -E 'NEEDED|SONAME' <<<"$LIBDRM_ELF" || true
 
           # Hard guard: a glibc dependency here would silently produce a
