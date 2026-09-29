@@ -1,0 +1,600 @@
+name: Build PanVK AdrenoTools package (Winlator / emulators)
+
+# Produces an AdrenoTools "ADPKG" driver package: a flat .zip containing
+#   meta.json        - package manifest (see libadrenotools tools/ADPKG.md)
+#   vulkan.panvk.so  - the PanVK driver, exposing the HMI hwvulkan HAL symbol
+#   <dep>.so         - any DT_NEEDED that is not part of the Android system libs
+#
+# Why this build differs from panvk-cross.yml (the rootfs/tarball build):
+#   * -Dplatforms=android only -> no libX11/libxcb/libxshmfence DT_NEEDED, which
+#     cannot be resolved inside an Android app linker namespace.
+#   * libdrm is built from source for bionic and bundled next to the driver.
+#     The Debian libdrm.so.2 used by the cross build is a glibc binary and can
+#     never be loaded by an Android process.
+#   * The adrenotools hook creates a namespace whose search path is the
+#     extracted driver directory, so bundled libs *do* resolve (ADPKG.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type"
+        type: choice
+        required: true
+        default: release
+        options:
+          - both
+          - release
+          - debugoptimized
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      date:  ${{ steps.ts.outputs.date }}
+      time:  ${{ steps.ts.outputs.time }}
+      stamp: ${{ steps.ts.outputs.stamp }}
+      types: ${{ steps.ts.outputs.types }}
+    steps:
+      - name: Compute build timestamp and types
+        id: ts
+        run: |
+          DATE=$(date -u +'%Y-%m-%d')
+          TIME=$(date -u +'%H%M%S')
+          echo "date=$DATE"   >> "$GITHUB_OUTPUT"
+          echo "time=$TIME"   >> "$GITHUB_OUTPUT"
+          echo "stamp=${DATE}-${TIME}" >> "$GITHUB_OUTPUT"
+
+          case "${{ github.event.inputs.build_type }}" in
+            release)        TYPES='["release"]' ;;
+            debugoptimized) TYPES='["debugoptimized"]' ;;
+            *)              TYPES='["debugoptimized","release"]' ;;
+          esac
+          echo "types=$TYPES" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        build-type: ${{ fromJSON(needs.prepare.outputs.types) }}
+
+    steps:
+      - name: Checkout (for sigbus.patch)
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              build-essential \
+              llvm-18-dev \
+              libclang-18-dev \
+              libclc-18-dev \
+              libllvmspirvlib-18-dev \
+              libelf-dev \
+              spirv-tools \
+              bison \
+              flex \
+              libdrm-dev \
+              pkg-config \
+              ninja-build \
+              patch \
+              gettext \
+              zip \
+              unzip
+          python -m pip install --upgrade pip
+          pip install mako PyYAML meson ninja packaging
+
+      - name: Verify libdrm headers are present
+        run: |
+          set -euo pipefail
+          for h in /usr/include/xf86drm.h /usr/include/xf86drmMode.h \
+                   /usr/include/libdrm/drm.h /usr/include/libdrm/drm_fourcc.h; do
+            if [[ ! -f "$h" ]]; then echo "ERROR: $h not found"; exit 1; fi
+            echo "OK: $h"
+          done
+
+      - name: Stage local tree as mesa-src and apply sigbus.patch
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -rf mesa-src
+          mkdir -p mesa-src
+          # Build THIS repo (includes the G57 frag-extres + debug-gate fix),
+          # not upstream xodiosx. Exclude prior build outputs and VCS data.
+          tar -C "$GITHUB_WORKSPACE" \
+            --exclude='./mesa-src' \
+            --exclude='./.git' \
+            --exclude='./build' \
+            --exclude='./build-host' \
+            --exclude='./build-bionic' \
+            --exclude='./winlator-out-*' \
+            --exclude='./*.tar.gz' \
+            --exclude='./*.zip' \
+            -cf - . | tar -C mesa-src -xf -
+          cd mesa-src
+
+          echo "=============================================="
+          echo "Applying sigbus.patch from repo root"
+          echo "=============================================="
+          if git apply --verbose "$GITHUB_WORKSPACE/sigbus.patch"; then
+            echo ">>> git apply succeeded"
+          else
+            echo ">>> git apply failed, falling back to patch(1)"
+            patch -p1 --batch --forward < "$GITHUB_WORKSPACE/sigbus.patch"
+          fi
+          git --no-pager diff --stat || true
+
+          # memfd_create: NDK API 30+ has it natively, drop the __TERMUX__ guard
+          sed -i \
+            's/#if defined(HAVE_MEMFD_CREATE) \&\& !defined __TERMUX__/#if defined(HAVE_MEMFD_CREATE)/' \
+            src/util/anon_file.c || true
+
+      - name: Stage libdrm headers into a workspace include dir
+        run: |
+          set -euo pipefail
+          # meson strips -I/usr/include* from pkg-config Cflags, and putting
+          # those paths on the NDK command line would shadow bionic headers.
+          # Stage everything into one workspace-local tree so meson keeps the
+          # path and bionic stays untouched.  No X11/xcb headers are staged:
+          # this build is Android-only and must not reference them.
+          DEST="$GITHUB_WORKSPACE/mesa-src/external-include"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          cp /usr/include/xf86drm.h     "$DEST/"
+          cp /usr/include/xf86drmMode.h "$DEST/"
+          cp /usr/include/libdrm/*.h    "$DEST/"
+          echo "==== $DEST ===="
+          ls -la "$DEST"
+          for h in xf86drm.h drm.h drm_fourcc.h; do
+            if [[ -f "$DEST/$h" ]]; then echo "OK: $h"; else
+              echo "ERROR: $h MISSING"; exit 1
+            fi
+          done
+
+      - name: Build host tools (mesa_clc, vtn_bindgen2, panfrost_compile)
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+          meson setup build-host \
+              -Dplatforms=[] \
+              -Dgallium-drivers=[] \
+              -Dvulkan-drivers=[] \
+              -Dtools=panfrost \
+              -Dprecomp-compiler=enabled \
+              -Dinstall-precomp-compiler=true \
+              -Dllvm=enabled \
+              -Dmesa-clc=enabled -Dinstall-mesa-clc=true
+
+          ninja -C build-host \
+            src/compiler/clc/mesa_clc \
+            src/compiler/spirv/vtn_bindgen2 \
+            src/panfrost/clc/panfrost_compile
+
+          ln -sf "build-host/src/compiler/clc/mesa_clc"       "build-host/src/compiler/clc/mesa-clc"
+          ln -sf "build-host/src/compiler/spirv/vtn_bindgen2" "build-host/src/compiler/spirv/vtn-bindgen2"
+          ln -sf "build-host/src/panfrost/clc/panfrost_compile" \
+                 "build-host/src/compiler/spirv/panfrost-compile"
+
+          echo "==== Host tools built ===="
+          ls -lh build-host/src/compiler/clc/mesa_clc
+          ls -lh build-host/src/compiler/spirv/vtn_bindgen2
+          ls -lh build-host/src/panfrost/clc/panfrost_compile
+
+      - name: Generate Android cross file
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${ANDROID_NDK_LATEST_HOME:-}" && -d "$ANDROID_NDK_LATEST_HOME" ]]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          else
+            NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          if [[ ! -d "$TOOLCHAIN" ]]; then
+            echo "ERROR: NDK toolchain not found at $TOOLCHAIN"
+            exit 1
+          fi
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export MESON_WORKING_DIR ANDROID_NDK_HOME="$NDK"
+
+          API=30
+
+          cat > android.toml <<EOF
+          [binaries]
+          c         = '${TOOLCHAIN}/bin/aarch64-linux-android${API}-clang'
+          cpp       = '${TOOLCHAIN}/bin/aarch64-linux-android${API}-clang++'
+          ar        = '${TOOLCHAIN}/bin/llvm-ar'
+          strip     = '${TOOLCHAIN}/bin/llvm-strip'
+          ld        = '${TOOLCHAIN}/bin/ld.lld'
+          pkgconfig = '/usr/bin/pkg-config'
+
+          [host_machine]
+          system     = 'android'
+          cpu_family = 'aarch64'
+          cpu        = 'aarch64'
+          endian     = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+
+          [built-in options]
+          c_args        = ['-I${MESON_WORKING_DIR}/external-include']
+          cpp_args      = ['-I${MESON_WORKING_DIR}/external-include']
+          c_link_args   = ['-L${MESON_WORKING_DIR}/shims', '-L${GITHUB_WORKSPACE}/bionic-libs']
+          cpp_link_args = ['-L${MESON_WORKING_DIR}/shims', '-L${GITHUB_WORKSPACE}/bionic-libs']
+          EOF
+
+          envsubst < android.toml > /tmp/android_wrapper.toml
+
+          echo "==== /tmp/android_wrapper.toml ===="
+          cat /tmp/android_wrapper.toml
+
+      # ------------------------------------------------------------------
+      # libdrm for bionic.  The driver needs drmGetDevices2 / drmSyncobj* /
+      # drmPrimeHandleToFD; the Debian libdrm that panvk-cross.yml links is a
+      # glibc ELF and can never be dlopen()ed by an Android process, so build
+      # a real bionic one here and bundle it into the package.
+      # ------------------------------------------------------------------
+      - name: Build bionic libdrm (shared)
+        run: |
+          set -euo pipefail
+          LIBDRM_VER=2.4.134
+          WORK="$GITHUB_WORKSPACE/drm"
+          rm -rf "$WORK"
+          mkdir -p "$WORK"
+          cd "$WORK"
+
+          # Source tarball straight from the Debian pool (pinned, no auth).
+          curl -fsSL -o libdrm.tar.xz \
+            "https://deb.debian.org/debian/pool/main/libd/libdrm/libdrm_${LIBDRM_VER}.orig.tar.xz"
+          tar -xf libdrm.tar.xz
+          SRC="libdrm-${LIBDRM_VER}"
+          test -d "$SRC"
+
+          # All hardware backends off: we only need the generic core
+          # (xf86drm + xf86drmMode).  intel=disabled also removes the only
+          # libpciaccess requirement, so there is nothing else to cross-build.
+          meson setup drmbuild "$SRC" \
+              --cross-file /tmp/android_wrapper.toml \
+              -Dprefix=/usr \
+              -Dlibdir=lib \
+              -Dintel=disabled \
+              -Dradeon=disabled \
+              -Damdgpu=disabled \
+              -Dnouveau=disabled \
+              -Dvmwgfx=disabled \
+              -Domap=disabled \
+              -Dexynos=disabled \
+              -Dfreedreno=disabled \
+              -Dtegra=disabled \
+              -Dvc4=disabled \
+              -Detnaviv=disabled \
+              -Dcairo-tests=disabled \
+              -Dman-pages=disabled \
+              -Dvalgrind=disabled \
+              -Dtests=false \
+              -Dinstall-test-programs=false \
+              -Dudev=false
+
+          ninja -C drmbuild
+          DESTDIR="$WORK/destdir" ninja -C drmbuild install
+
+          LDIR="$WORK/destdir/usr/lib"
+          echo "==== installed libdrm ===="
+          ls -la "$LDIR"
+
+          REAL=""
+          for f in "$LDIR"/libdrm.so*; do
+            if [[ -f "$f" && ! -L "$f" ]]; then REAL="$f"; fi
+          done
+          if [[ -z "$REAL" ]]; then
+            echo "ERROR: no libdrm.so* produced"
+            exit 1
+          fi
+          SONAME="$(readelf -d "$REAL" | awk '/SONAME/ && match($0, /\[[^]]*\]/) { print substr($0, RSTART + 1, RLENGTH - 2) }')"
+          SONAME="${SONAME:-$(basename "$REAL")}"
+
+          mkdir -p "$GITHUB_WORKSPACE/bionic-libs"
+          cp -L "$REAL" "$GITHUB_WORKSPACE/bionic-libs/$SONAME"
+          ln -sf "$SONAME" "$GITHUB_WORKSPACE/bionic-libs/libdrm.so"
+
+          echo "==== bionic libdrm: $SONAME ===="
+          LIBDRM_ELF="$(readelf -d "$GITHUB_WORKSPACE/bionic-libs/$SONAME")"
+          grep -E 'NEEDED|SONAME' <<<"$LIBDRM_ELF" || true
+
+          # Hard guard: a glibc dependency here would silently produce a
+          # package that cannot be loaded on the device.
+          if grep -q 'libc\.so\.6' <<<"$LIBDRM_ELF"; then
+            echo "ERROR: bionic libdrm links against glibc"
+            exit 1
+          fi
+          ls -lh "$GITHUB_WORKSPACE/bionic-libs"
+
+      - name: Generate pkg-config shims for Android
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          INC="-I${MESON_WORKING_DIR}/external-include"
+          mkdir -p shims
+
+          if [[ -n "${ANDROID_NDK_LATEST_HOME:-}" && -d "$ANDROID_NDK_LATEST_HOME" ]]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          else
+            NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          if [[ ! -d "$TOOLCHAIN" ]]; then
+            echo "ERROR: NDK toolchain not found at $TOOLCHAIN"
+            exit 1
+          fi
+
+          "$TOOLCHAIN/bin/llvm-ar" cr shims/librt.a
+
+          # libdrm points at the bionic build produced by the previous step.
+          cat > shims/libdrm.pc <<EOF
+          Name: libdrm
+          Description: libdrm (bionic, built from source)
+          Version: 2.4.134
+          Libs: -L${GITHUB_WORKSPACE}/bionic-libs -ldrm
+          Cflags: ${INC}
+          EOF
+
+          # The android platform deps mesa looks up when android-stub is off.
+          # Harmless while android-stub=true, kept so flipping that option does
+          # not silently change the link line.
+          for lib in \
+              gralloctypes hidlbase utils cutils hardware log sync \
+              nativewindow ui
+          do
+            cat > "shims/$lib.pc" <<EOF
+          Name: $lib
+          Description: $lib (Android shim)
+          Version: 1.15
+          Libs: -l$lib
+          Cflags: ${INC}
+          EOF
+          done
+
+          cat > shims/android.hardware.graphics.mapper.pc <<EOF
+          Name: android.hardware.graphics.mapper
+          Description: android.hardware.graphics.mapper (Android shim)
+          Version: 4.0
+          Libs: -landroid.hardware.graphics.mapper
+          Cflags: ${INC}
+          EOF
+
+          echo "==== shims directory ===="
+          ls -la shims
+          echo "==== libdrm.pc ===="
+          cat shims/libdrm.pc
+
+          echo "==== pkg-config sanity ===="
+          PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags --libs libdrm
+
+      - name: Configure meson (cross-compile, AdrenoTools target)
+        working-directory: mesa-src
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
+        run: |
+          set -euo pipefail
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
+
+          rm -rf build
+
+          meson setup build \
+              --cross-file /tmp/android_wrapper.toml \
+              -Dbuildtype=${{ matrix.build-type }} \
+              -Dplatforms=android \
+              -Dandroid-stub=true \
+              -Dandroid-libbacktrace=disabled \
+              -Dplatform-sdk-version=30 \
+              -Dglx=disabled \
+              -Dgbm=disabled \
+              -Degl=disabled \
+              -Dopengl=false \
+              -Dgles1=disabled \
+              -Dgles2=disabled \
+              -Dglvnd=disabled \
+              -Dvalgrind=disabled \
+              -Dgallium-drivers= \
+              -Dshared-glapi=disabled \
+              -Dzstd=disabled \
+              -Dmesa-clc=system \
+              -Dprecomp-compiler=system \
+              -Dvulkan-drivers=panfrost \
+              -Dllvm=disabled \
+              -Dstrip=false \
+              -Dpanfrost-kmds=kbase,panthor
+
+      - name: Verify external-include is on the compile command line
+        working-directory: mesa-src
+        run: |
+          set -euo pipefail
+          if grep -q "$GITHUB_WORKSPACE/mesa-src/external-include" build/build.ninja; then
+            echo "OK: external-include IS on the compile line"
+            grep -m1 "external-include" build/build.ninja | head -c 400
+            echo
+          else
+            echo "ERROR: external-include is NOT in build.ninja"
+            exit 1
+          fi
+
+      - name: Compile libvulkan_panfrost.so
+        working-directory: mesa-src
+        env:
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
+        run: |
+          set -euo pipefail
+          MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
+          export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
+          ninja -C build src/panfrost/vulkan/libvulkan_panfrost.so
+
+      - name: Check link dependencies (no glibc / no X11)
+        run: |
+          set -euo pipefail
+          SO="mesa-src/build/src/panfrost/vulkan/libvulkan_panfrost.so"
+          # Capture first: "readelf | grep -q" under pipefail turns an early
+          # grep exit into SIGPIPE from readelf and a bogus failure.
+          ELF="$(readelf -d "$SO")"
+          DYN="$(readelf --dyn-syms "$SO")"
+
+          echo "==== NEEDED ===="
+          grep -E 'NEEDED|SONAME' <<<"$ELF" || true
+          echo "==== HMI / ICD exports ===="
+          grep -E '[[:space:]](HMI|vk_icdGetInstanceProcAddr)$' <<<"$DYN" || true
+
+          FAIL=0
+          if grep -qE 'libc\.so\.6' <<<"$ELF"; then
+            echo "ERROR: links against glibc"; FAIL=1
+          fi
+          if grep -qE 'libxcb|libX11|libxshmfence|libXext|libXrandr' <<<"$ELF"; then
+            echo "ERROR: X11/xcb dependency survived -Dplatforms=android"; FAIL=1
+          fi
+          if ! grep -qE '[[:space:]]HMI$' <<<"$DYN"; then
+            echo "ERROR: HMI (hwvulkan HAL) symbol is not exported"
+            FAIL=1
+          fi
+          if [[ "$FAIL" -ne 0 ]]; then exit 1; fi
+
+      - name: Package AdrenoTools driver package (zip)
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${ANDROID_NDK_LATEST_HOME:-}" && -d "$ANDROID_NDK_LATEST_HOME" ]]; then
+            NDK="$ANDROID_NDK_LATEST_HOME"
+          else
+            NDK="/usr/local/lib/android/sdk/ndk/$(ls /usr/local/lib/android/sdk/ndk 2>/dev/null | sort -V | tail -1)"
+          fi
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          API=30
+
+          OUT="adpkg-out"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+
+          cp mesa-src/build/src/panfrost/vulkan/libvulkan_panfrost.so "$OUT/vulkan.panvk.so"
+          # The package is a shipping artifact; the unstripped .so stays
+          # available from the panvk-cross workflow.
+          "$TOOLCHAIN/bin/llvm-strip" --strip-unneeded "$OUT/vulkan.panvk.so"
+          echo "==== driver size after strip ===="
+          ls -lh "$OUT/vulkan.panvk.so"
+
+          # driverVersion must match ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$
+          DRIVER_VER="$(cut -d- -f1 mesa-src/VERSION | tr -d '[:space:]')"
+          if [[ ! "$DRIVER_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: cannot derive driverVersion from mesa-src/VERSION (got '$DRIVER_VER')"
+            exit 1
+          fi
+
+          # ---- manifest -------------------------------------------------
+          # vendor is restricted to the enum {Qualcomm, Mesa} by the schema.
+          cat > "$OUT/meta.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "name": "Mesa PanVK Mali-G57",
+            "description": "Experimental Mesa PanVK Vulkan driver for ARM Mali-G57 (kbase job manager), built from source for AdrenoTools-compatible loaders.",
+            "author": "crowndoom",
+            "packageVersion": "${{ needs.prepare.outputs.stamp }}",
+            "vendor": "Mesa",
+            "driverVersion": "${DRIVER_VER}",
+            "minApi": 30,
+            "libraryName": "vulkan.panvk.so"
+          }
+          EOF
+          echo "==== meta.json ===="
+          cat "$OUT/meta.json"
+
+          # ---- bundle every dependency that is not an Android system lib --
+          # The adrenotools hook creates a linker namespace whose search path
+          # is this directory, so bundled sonames do resolve (ADPKG.md).
+          SYSTEM_LIBS=" libc.so libm.so libdl.so liblog.so libz.so libhardware.so libnativewindow.so libandroid.so libsync.so libcutils.so libutils.so libbase.so libui.so libgui.so libgralloctypes.so libEGL.so libGLESv2.so "
+
+          SYSROOT_LIB="$TOOLCHAIN/sysroot/usr/lib/aarch64-linux-android"
+          NEEDED="$(readelf -d "$OUT/vulkan.panvk.so" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')"
+
+          BUNDLED=()
+          for n in $NEEDED; do
+            if [[ "$SYSTEM_LIBS" == *" $n "* ]]; then
+              echo "system  : $n"
+              continue
+            fi
+            found=""
+            for d in "$GITHUB_WORKSPACE/bionic-libs" "$SYSROOT_LIB/$API" "$SYSROOT_LIB"; do
+              if [[ -f "$d/$n" ]]; then found="$d/$n"; break; fi
+            done
+            if [[ -z "$found" ]]; then
+              found="$(find "$SYSROOT_LIB" "$GITHUB_WORKSPACE/bionic-libs" -name "$n" -type f 2>/dev/null | sed -n '1p')"
+            fi
+            if [[ -z "$found" ]]; then
+              echo "ERROR: '$n' is neither an Android system library nor available to bundle."
+              echo "Add it to SYSTEM_LIBS or arrange a bionic build of it."
+              exit 1
+            fi
+            cp -L "$found" "$OUT/$n"
+            echo "bundled : $n  <-  $found"
+            BUNDLED+=("$n")
+          done
+
+          # Transitive check: bundled libs may only pull in system libs.
+          for b in "${BUNDLED[@]:-}"; do
+            if [[ -z "$b" ]]; then continue; fi
+            for n in $(readelf -d "$OUT/$b" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p'); do
+              if [[ "$SYSTEM_LIBS" != *" $n "* ]]; then
+                echo "ERROR: bundled '$b' needs non-system '$n' which is not in the package"
+                exit 1
+              fi
+            done
+          done
+
+          echo "==== package contents ===="
+          find "$OUT" -type f -printf '%f\t%s bytes\n' | sort
+
+          ZIPNAME="panvk-adrenotools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.zip"
+          ( cd "$OUT" && zip -9 -r "../$ZIPNAME" * )
+          echo "==== $ZIPNAME ===="
+          ls -lh "$ZIPNAME"
+          unzip -l "$ZIPNAME"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: panvk-adrenotools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}
+          path: panvk-adrenotools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: find artifacts -type f -name '*.zip'
+
+      - name: Attach packages to the g57 release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: g57
+          files: artifacts/*.zip
+          overwrite_files: true
+          fail_on_unmatched_files: true
