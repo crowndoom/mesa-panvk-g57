@@ -26,6 +26,10 @@ on:
           - both
           - release
           - debugoptimized
+      release_tag:
+        description: "Tag to create (leave empty to auto-generate adpkg-<date>-<time>-<sha>)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -37,16 +41,29 @@ jobs:
       date:  ${{ steps.ts.outputs.date }}
       time:  ${{ steps.ts.outputs.time }}
       stamp: ${{ steps.ts.outputs.stamp }}
+      tag:   ${{ steps.ts.outputs.tag }}
       types: ${{ steps.ts.outputs.types }}
     steps:
-      - name: Compute build timestamp and types
+      - name: Compute build timestamp, tag and types
         id: ts
         run: |
           DATE=$(date -u +'%Y-%m-%d')
           TIME=$(date -u +'%H%M%S')
-          echo "date=$DATE"   >> "$GITHUB_OUTPUT"
-          echo "time=$TIME"   >> "$GITHUB_OUTPUT"
-          echo "stamp=${DATE}-${TIME}" >> "$GITHUB_OUTPUT"
+          STAMP="${DATE}-${TIME}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "date=$DATE"           >> "$GITHUB_OUTPUT"
+          echo "time=$TIME"           >> "$GITHUB_OUTPUT"
+          echo "stamp=$STAMP"         >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+          # Every dispatch creates its own release, so the package always has
+          # a visible entry of its own instead of being appended to g57.
+          if [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          else
+            TAG="adpkg-${DATE}-${TIME}-${SHORT_SHA}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           case "${{ github.event.inputs.build_type }}" in
             release)        TYPES='["release"]' ;;
@@ -603,10 +620,44 @@ jobs:
       - name: List downloaded files
         run: find artifacts -type f -name '*.zip'
 
-      - name: Attach packages to the g57 release
+      - name: Create GitHub Release for this build
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: g57
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: "PanVK AdrenoTools package — ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }} UTC"
+          body: |
+            ## PanVK AdrenoTools driver package (aarch64)
+
+            An AdrenoTools / ADPKG package: a flat `.zip` containing
+            `meta.json` + `vulkan.panvk.so` + the bundled non-system
+            dependencies, importable via Winlator's **AdrenoTools GPU
+            Drivers** menu and other libadrenotools consumers.
+
+            **Build date (UTC):** `${{ needs.prepare.outputs.date }}`
+            **Build time (UTC):** `${{ needs.prepare.outputs.time }}`
+            **Commit:** `${{ github.sha }}`
+            **Build types:** `${{ needs.prepare.outputs.types }}`
+
+            ### Files
+            - `panvk-adrenotools-aarch64-*-*.zip`
+
+            ### Install
+            1. Import the `.zip` through the emulator's AdrenoTools /
+               custom-driver menu (no extraction needed).
+            2. The package already carries `libdrm.so` and
+               `libc++_shared.so`; everything else in `DT_NEEDED`
+               (`libhardware`, `libnativewindow`, `libz`, `libm`,
+               `libdl`, `libc`) comes from Android itself.
+
+            ### Build-time guards (all enforced, build fails otherwise)
+            - no `libc.so.6` in the driver or in bundled libdrm
+            - no `libxcb` / `libX11` / `libxshmfence`
+            - `HMI` (hwvulkan HAL) exported after strip
+            - bundled libs may only depend on Android system libraries
           files: artifacts/*.zip
           overwrite_files: true
           fail_on_unmatched_files: true
+          prerelease: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
