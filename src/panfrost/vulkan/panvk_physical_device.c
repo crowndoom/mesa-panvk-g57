@@ -1059,6 +1059,7 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    if (!core_count) {
       result = VK_ERROR_INITIALIZATION_FAILED;
       goto fail;
+   }
 
    memset(device->name, 0, sizeof(device->name));
    if (unknown_gpu)
@@ -1193,10 +1194,23 @@ panvk_physical_device_init_kbase(struct panvk_physical_device *device,
     * zeroed; WSI paths that compare rdev values will simply not match. */
 
    device->formats.all = pan_format_table(arch);
+   if (!device->formats.all) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail_kbase;
+   }
+
    device->formats.blendable = pan_blendable_format_table(arch);
+   if (!device->formats.blendable) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail_kbase;
+   }
 
    unsigned core_count =
       pan_query_core_count(&device->kmod.dev->props);
+   if (!core_count) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail_kbase;
+   }
 
    memset(device->name, 0, sizeof(device->name));
    if (unknown_gpu)
@@ -1257,9 +1271,17 @@ panvk_physical_device_init_kbase(struct panvk_physical_device *device,
       goto fail_kbase;
 
    init_shader_caches(device, instance);
+   if (!device->vk.supported_sync_types) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail_kbase;
+   }
 
    panvk_arch_dispatch(arch, get_physical_device_properties, instance, device,
                        &device->vk.properties);
+   if (!device->vk.properties.apiVersion) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail_kbase;
+   }
 
    device->vk.supported_sync_types = device->sync_types;
 
