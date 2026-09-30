@@ -1043,10 +1043,22 @@ panvk_physical_device_init(struct panvk_physical_device *device,
       goto fail;
 
    device->formats.all = pan_format_table(arch);
+   if (!device->formats.all) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail;
+   }
+
    device->formats.blendable = pan_blendable_format_table(arch);
+   if (!device->formats.blendable) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail;
+   }
 
    unsigned core_count =
       pan_query_core_count(&device->kmod.dev->props);
+   if (!core_count) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail;
 
    memset(device->name, 0, sizeof(device->name));
    if (unknown_gpu)
@@ -1101,10 +1113,18 @@ panvk_physical_device_init(struct panvk_physical_device *device,
 
    /* initialize disk cache after vk_physical_device_init */
    init_shader_caches(device, instance);
+   if (!device->vk.supported_sync_types) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail;
+   }
 
    /* pipeline binary props rely on disk cache init state */
    panvk_arch_dispatch(arch, get_physical_device_properties, instance, device,
                        &device->vk.properties);
+   if (!device->vk.properties.apiVersion) {
+      result = VK_ERROR_INITIALIZATION_FAILED;
+      goto fail;
+   }
 
    device->vk.supported_sync_types = device->sync_types;
 
