@@ -51,46 +51,6 @@ panvk_can_present_on_device(VkPhysicalDevice pdevice, int fd)
 VkResult
 panvk_wsi_init(struct panvk_physical_device *physical_device)
 {
-   /*
-    * PANVKDBG runtime capture.
-    *
-    * Diagnostic only: duplicate stderr to a persistent file when possible.
-    * If open() fails, leave the original stderr untouched.
-    */
-   {
-      static bool panvkdbg_filelog_initialized = false;
-
-      if (!panvkdbg_filelog_initialized) {
-         panvkdbg_filelog_initialized = true;
-
-         const char *panvkdbg_path =
-            getenv("PANVK_DEBUG_LOG_FILE");
-
-         if (!panvkdbg_path || !panvkdbg_path[0])
-            panvkdbg_path = "/data/user/0/com.antutu.ABenchMark/files/imagefs/home/xuser/panvk_runtime.log";
-
-         FILE *panvkdbg_file = fopen(panvkdbg_path, "a");
-
-         if (panvkdbg_file) {
-            setvbuf(panvkdbg_file, NULL, _IOLBF, 0);
-
-            fprintf(panvkdbg_file,
-                    "\n===== PANVKDBG PROCESS START pid=%ld =====\n",
-                    (long)getpid());
-            fflush(panvkdbg_file);
-
-            if (dup2(fileno(panvkdbg_file), STDERR_FILENO) >= 0) {
-               setvbuf(stderr, NULL, _IOLBF, 0);
-               fprintf(stderr,
-                       "PANVKDBG FILE_LOG path=%s pid=%ld\n",
-                       panvkdbg_path, (long)getpid());
-               fflush(stderr);
-            }
-
-            fclose(panvkdbg_file);
-         }
-      }
-   }
    struct panvk_instance *instance =
       to_panvk_instance(physical_device->vk.instance);
    const bool uses_kbase = physical_device->kbase_node_path[0] != '\0';
@@ -117,16 +77,6 @@ panvk_wsi_init(struct panvk_physical_device *physical_device)
 #endif
    VkResult result;
 
-   fprintf(stderr,
-           "PANVKDBG WSI: uses_kbase=%d termux_raw=%d raw_dri3=%d "
-           "kbase_dmabuf=%d sw_device=%d raw_fd_modifier=%d\n",
-           uses_kbase,
-           termux_raw_dri3,
-           kbase_raw_dri3,
-           kbase_dmabuf,
-           uses_kbase && !kbase_dmabuf,
-           kbase_dmabuf && kbase_raw_dri3);
-
    result = wsi_device_init(&physical_device->wsi_device,
                             panvk_physical_device_to_handle(physical_device),
                             panvk_wsi_proc_addr, &instance->vk.alloc, -1,
@@ -140,17 +90,11 @@ panvk_wsi_init(struct panvk_physical_device *physical_device)
    if (result != VK_SUCCESS)
       return result;
 
-   /*
-    * PANVKDBG diagnostic only:
-    * USER_BUFFER host import now exists in the kbase backend.  Enable it
+   /* USER_BUFFER host import now exists in the kbase backend.  Enable it
     * internally for CPU/X11 WSI without advertising the Vulkan extension yet.
     */
-   if (uses_kbase) {
+   if (uses_kbase)
       physical_device->wsi_device.has_import_memory_host = true;
-      fprintf(stderr,
-              "PANVKDBG WSI host-import diagnostic enabled\n");
-   }
-
 
    /* kbase syncs carry GPU seqno state in userspace and cannot be copied via
     * DRM syncobj fd payloads.  Keep even empty WSI submits on the real queue
