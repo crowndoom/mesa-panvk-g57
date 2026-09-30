@@ -312,26 +312,6 @@ kbase_dev_query_props(struct kbase_kmod_dev *kbase_dev,
    props->mmu_features = (uint32_t)kbase_gpuprop_get(
       buf, buf_size, KBASE_GPUPROP_RAW_MMU_FEATURES, 0);
 
-   {
-      uint32_t js_present = (uint32_t)kbase_gpuprop_get(
-         buf, buf_size, KBASE_GPUPROP_RAW_JS_PRESENT, 0);
-      uint32_t jsf0 = (uint32_t)kbase_gpuprop_get(
-         buf, buf_size, KBASE_GPUPROP_RAW_JS_FEATURES_0, 0);
-      uint32_t jsf1 = (uint32_t)kbase_gpuprop_get(
-         buf, buf_size, KBASE_GPUPROP_RAW_JS_FEATURES_0 + 1, 0);
-      uint32_t jsf2 = (uint32_t)kbase_gpuprop_get(
-         buf, buf_size, KBASE_GPUPROP_RAW_JS_FEATURES_0 + 2, 0);
-      uint32_t ncg = (uint32_t)kbase_gpuprop_get(
-         buf, buf_size, KBASE_GPUPROP_COHERENCY_NUM_CORE_GROUPS, 0);
-      uint32_t cg0 = (uint32_t)kbase_gpuprop_get(
-         buf, buf_size, KBASE_GPUPROP_COHERENCY_GROUP_0, 0);
-      fprintf(stderr,
-              "PANVKDBG kbase props: js_present=0x%x jsf=%x,%x,%x num_cg=%u cg0=0x%x tiler_features=0x%x shader_present=0x%llx\n",
-              js_present, jsf0, jsf1, jsf2, ncg, cg0,
-              props->tiler_features,
-              (unsigned long long)props->shader_present);
-   }
-
    /* TEXTURE_FEATURES_0..2 are consecutive keys, but TEXTURE_FEATURES_3
     * was added later and got a non-contiguous key. */
    STATIC_ASSERT(ARRAY_SIZE(props->texture_features) == 4);
@@ -1182,12 +1162,6 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
    mesa_logd("kbase: %s driver, uAPI version %d.%d",
              is_csf ? "CSF" : "JM", ver.major, ver.minor);
 
-   fprintf(stderr,
-           "PANVKDBG kbase uAPI: %s %u.%u\\n",
-           is_csf ? "CSF" : "JM",
-           (unsigned)ver.major,
-           (unsigned)ver.minor);
-
    /* Set context creation flags.  Zero for maximum compatibility; this also
     * creates the kernel-side context. */
    struct kbase_ioctl_set_flags set_flags = { .create_flags = 0 };
@@ -1214,30 +1188,28 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
       goto err_unmap_tracking;
    }
 
-    struct kbase_kmod_dev *kbase_dev =
-       pan_kmod_alloc(allocator, sizeof(*kbase_dev));
-    if (!kbase_dev) {
-       mesa_loge("kbase: failed to allocate kbase_kmod_dev");
-       free(props_buf);
-       goto err_unmap_tracking;
-    }
+   struct kbase_kmod_dev *kbase_dev =
+      pan_kmod_alloc(allocator, sizeof(*kbase_dev));
+   if (!kbase_dev) {
+      mesa_loge("kbase: failed to allocate kbase_kmod_dev");
+      free(props_buf);
+      goto err_unmap_tracking;
+   }
 
-    /* Initialise the EXEC_VA zone so that GPU-executable allocations
+   /* Initialise the EXEC_VA zone so that GPU-executable allocations
      * (shader BOs) are possible.  4G of executable VA (0x100000 pages)
-     * matches what panfork uses.  On CSF uAPI >= 1.9 the zone is set up
-     * automatically and this is a no-op.  Failure is not fatal for
-     * enumeration, but executable allocations will fail later, so warn. */
-    struct kbase_ioctl_mem_exec_init exec_init = { .va_pages = 0x100000 };
-    bool exec_init_failed = false;
-    if (ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &exec_init)) {
-       exec_init_failed = true;
-       mesa_logw("kbase: KBASE_IOCTL_MEM_EXEC_INIT failed: %s "
-                 "(executable BO allocation will not work)", strerror(errno));
-    }
-    fprintf(stderr, "PANVKDBG kbase MEM_EXEC_INIT %s\n",
-            exec_init_failed ? "FAILED (shaders -> rw)" : "ok (shaders -> exec)");
+    * matches what panfork uses.  On CSF uAPI >= 1.9 the zone is set up
+    * automatically and this is a no-op.  Failure is not fatal for
+    * enumeration, but executable allocations will fail later, so warn. */
+   struct kbase_ioctl_mem_exec_init exec_init = { .va_pages = 0x100000 };
+   bool exec_init_failed = false;
+   if (ioctl(fd, KBASE_IOCTL_MEM_EXEC_INIT, &exec_init)) {
+      exec_init_failed = true;
+      mesa_logw("kbase: KBASE_IOCTL_MEM_EXEC_INIT failed: %s "
+                "(executable BO allocation will not work)", strerror(errno));
+   }
 
-    /* Initialise the JIT allocator.  This must happen before any allocation
+   /* Initialise the JIT allocator.  This must happen before any allocation
      * is made: besides setting up JIT, on 64-bit clients this is what carves
      * the CUSTOM_VA zone out of the top of the SAME_VA zone
      * (kbase_region_tracker_init_jit_64) — and kernel-internal allocations
@@ -1245,15 +1217,15 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
      * KBASE_IOCTL_CS_TILER_HEAP_INIT fails with ENOMEM.  Parameters match
      * panfork's.  Failure is non-fatal for enumeration but breaks tiler
      * heaps, so warn. */
-    struct kbase_ioctl_mem_jit_init jit_init = {
-       .va_pages = 1ull << 20 /* PATCH: reduced from panfork's 1<<25 (~128GB VA) - testing if kernel 4.19 rejects oversized JIT VA request */,
-        .max_allocations = 255,
-       .phys_pages = 1ull << 20,
-    };
-    if (ioctl(fd, KBASE_IOCTL_MEM_JIT_INIT, &jit_init)) {
-       mesa_logw("kbase: KBASE_IOCTL_MEM_JIT_INIT failed: %s "
-                 "(tiler heap creation will not work)", strerror(errno));
-    }
+   struct kbase_ioctl_mem_jit_init jit_init = {
+      .va_pages = 1ull << 20 /* PATCH: reduced from panfork's 1<<25 (~128GB VA) - testing if kernel 4.19 rejects oversized JIT VA request */,
+      .max_allocations = 255,
+      .phys_pages = 1ull << 20,
+   };
+   if (ioctl(fd, KBASE_IOCTL_MEM_JIT_INIT, &jit_init)) {
+      mesa_logw("kbase: KBASE_IOCTL_MEM_JIT_INIT failed: %s "
+                "(tiler heap creation will not work)", strerror(errno));
+   }
 
    /* Report the kernel uAPI version from the handshake (the caller can't
     * use drmGetVersion() on a kbase fd, so drv_info is either NULL or a
@@ -1273,12 +1245,12 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
    if (user_cache_sync && !strcmp(user_cache_sync, "0"))
       flags |= PAN_KMOD_DEV_FLAG_MMAP_SYNC_THROUGH_KERNEL;
 
-    pan_kmod_dev_init(&kbase_dev->base, fd, flags, &kbase_drv,
+   pan_kmod_dev_init(&kbase_dev->base, fd, flags, &kbase_drv,
                       &kbase_kmod_ops, allocator);
 
-    kbase_dev->base.exec_init_failed = exec_init_failed;
-    kbase_dev->is_csf = is_csf;
-    kbase_dev->tracking_page = tracking_page;
+   kbase_dev->base.exec_init_failed = exec_init_failed;
+   kbase_dev->is_csf = is_csf;
+   kbase_dev->tracking_page = tracking_page;
    kbase_dev->next_handle = 1;
    kbase_dev->dma_heap_fd = -1;
    kbase_dev->kcpu.fence_fd = -1;
@@ -1485,11 +1457,6 @@ kbase_kmod_import_user_buffer(struct pan_kmod_dev *dev, void *ptr,
       return NULL;
    }
 
-   fprintf(stderr,
-           "PANVKDBG USERBUF_SIZE_TEST exact=%" PRIu64
-           " mod4096=%" PRIu64 "\n",
-           size, size & (page_size - 1));
-
    struct kbase_kmod_bo *kbase_bo =
       pan_kmod_dev_alloc(dev, sizeof(*kbase_bo));
    if (!kbase_bo)
@@ -1522,11 +1489,6 @@ kbase_kmod_import_user_buffer(struct pan_kmod_dev *dev, void *ptr,
       },
    };
 
-   fprintf(stderr,
-           "PANVKDBG USERBUF import ptr=%p size=%" PRIu64
-           " flags=%016" PRIx64 "\n",
-           ptr, size, import_flags);
-
    if (ioctl(dev->fd, KBASE_IOCTL_MEM_IMPORT, &req)) {
       mesa_loge("kbase: USER_BUFFER KBASE_IOCTL_MEM_IMPORT failed: %s",
                 strerror(errno));
@@ -1537,15 +1499,6 @@ kbase_kmod_import_user_buffer(struct pan_kmod_dev *dev, void *ptr,
    const uint64_t bo_size = req.out.va_pages * page_size;
    const bool need_mmap =
       (req.out.flags & (BASE_MEM_SAME_VA | BASE_MEM_NEED_MMAP)) != 0;
-
-   fprintf(stderr,
-           "PANVKDBG USERBUF ioctl gpu_va=%016" PRIx64
-           " pages=%" PRIu64 " out_flags=%016" PRIx64
-           " need_mmap=%d\n",
-           (uint64_t)req.out.gpu_va,
-           (uint64_t)req.out.va_pages,
-           (uint64_t)req.out.flags,
-           need_mmap);
 
    if (!bo_size) {
       mesa_loge("kbase: USER_BUFFER returned zero-sized allocation");
@@ -2041,14 +1994,6 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev,
       kbase_dev->debug_bo_vas[idx] = kbase_bo->gpu_va;
       kbase_dev->debug_bo_ptrs[idx] = kbase_bo->cpu_ptr;
       kbase_dev->debug_bo_sizes[idx] = kbase_bo->base.size;
-
-      fprintf(stderr,
-              "PANVKDBG NATIVEBO REGISTER gpu=%016" PRIx64
-              " cpu=%p size=%" PRIu64 " count=%u\n",
-              kbase_bo->gpu_va,
-              kbase_bo->cpu_ptr,
-              kbase_bo->base.size,
-              kbase_dev->debug_bo_count);
    }
 
    return &kbase_bo->base;

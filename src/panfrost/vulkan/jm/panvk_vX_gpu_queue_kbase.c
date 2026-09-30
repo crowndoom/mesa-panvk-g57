@@ -656,13 +656,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          if (result != VK_SUCCESS) {
             panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
             pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
-            util_dynarray_foreach(&batch->jobs, void *, job) {
-               const uint32_t *header = *job;
-               fprintf(stderr,
-                       "PANVKDBG failed batch job: status=%08x task=%08x "
-                       "fault=%08x%08x type_index=%08x\n",
-                       header[0], header[1], header[3], header[2], header[4]);
-            }
             return result;
          }
       }
