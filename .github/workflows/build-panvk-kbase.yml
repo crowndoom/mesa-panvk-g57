@@ -21,7 +21,8 @@ jobs:
             binutils-aarch64-linux-gnu \
             bison flex pkg-config \
             libx11-dev libxext-dev libxrandr-dev libxfixes-dev libxdamage-dev \
-            libxshmfence-dev libdrm-dev libwayland-dev wayland-protocols \
+            libxshmfence-dev libdrm-dev libwayland-dev libwayland-egl-backend-dev \
+            wayland-protocols \
             libvulkan-dev zlib1g-dev libexpat1-dev libunwind-dev libzstd-dev \
             libelf-dev libclang-dev llvm-dev clang \
             libllvmspirvlib-18-dev libclc-18-dev spirv-tools \
