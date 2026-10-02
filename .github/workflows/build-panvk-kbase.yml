@@ -46,24 +46,6 @@ jobs:
             -Dllvm=enabled \
             -Dcpp_std=c++17 2>&1 | tee configure.log
 
-      - name: Report configure errors
-        if: failure()
-        run: |
-          # Job logs need admin to read via API; annotations are public.
-          # Surface the actual meson/ninja failure lines so the run is
-          # diagnosable from outside the repo.
-          n=0
-          for f in configure.log build.log build-panvk/meson-logs/meson-log.txt; do
-            [ -f "$f" ] || continue
-            grep -E "ERROR|error:|FAILED|undefined reference|No such file|Traceback" "$f" 2>/dev/null | tail -10
-            echo "---- tail of $f ----"
-            tail -10 "$f"
-          done | while IFS= read -r line; do
-            n=$((n+1))
-            [ "$n" -gt 30 ] && break
-            echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g')"
-          done
-
       - name: Build Mesa
         run: |
           cd build-panvk
@@ -76,3 +58,21 @@ jobs:
           name: mesa-panvk-kbase
           path: build-panvk/
           retention-days: 7
+
+      # Must run last: job logs require admin rights to fetch via the API,
+      # so annotations are the only publicly readable diagnostics. Placed
+      # after every build step so it fires for configure *and* build failures.
+      - name: Report errors
+        if: failure()
+        run: |
+          n=0
+          for f in configure.log build.log build-panvk/meson-logs/meson-log.txt; do
+            [ -f "$f" ] || continue
+            grep -E "ERROR|error:|FAILED|undefined reference|No such file|Traceback" "$f" 2>/dev/null | tail -10
+            echo "---- tail of $f ----"
+            tail -10 "$f"
+          done | while IFS= read -r line; do
+            n=$((n+1))
+            [ "$n" -gt 30 ] && break
+            echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g')"
+          done
