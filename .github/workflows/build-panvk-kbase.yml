@@ -24,7 +24,7 @@ jobs:
             libxshmfence-dev libdrm-dev libwayland-dev wayland-protocols \
             libvulkan-dev zlib1g-dev libexpat1-dev libunwind-dev libzstd-dev \
             libelf-dev libclang-dev llvm-dev clang \
-            libllvmspirvlib-19-dev libclc-19-dev spirv-tools \
+            libllvmspirvlib-18-dev libclc-18-dev spirv-tools \
             libxcb-randr0-dev libxcb-glx0-dev libxcb-shm0-dev \
             libxcb-xfixes0-dev libxcb-dri3-dev libxcb-present-dev \
             libx11-xcb-dev libxcb-keysyms1-dev libxxf86vm-dev
