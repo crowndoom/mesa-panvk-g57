@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <poll.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>

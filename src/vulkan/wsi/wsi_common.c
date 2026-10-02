@@ -41,6 +41,7 @@
 #include "vk_util.h"
 
 #include <assert.h>
+#include <stdbool.h>
 #include <time.h>
 #include <stdlib.h>
 #include <stdio.h>

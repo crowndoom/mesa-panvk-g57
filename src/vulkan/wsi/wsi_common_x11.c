@@ -36,6 +36,7 @@
 
 #include "util/macros.h"
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
 
