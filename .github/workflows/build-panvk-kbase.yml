@@ -50,7 +50,22 @@ jobs:
         run: |
           cd build-panvk
           set -o pipefail
-          ninja 2>&1 | tee ../build.log
+          rc=0
+          ninja 2>&1 | tee ../build.log || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            # Emit immediately: the failure reporter below cannot always
+            # see build.log, and job logs need admin rights to read.
+            echo "::error title=build failed::ninja exited with ${rc}"
+            grep -E "error:|Error |FAILED|undefined reference|No such file" ../build.log \
+              2>/dev/null | sort -u | head -25 | while IFS= read -r line; do
+                echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g')"
+              done
+            echo "::error title=tail of build.log::"
+            tail -25 ../build.log 2>/dev/null | while IFS= read -r line; do
+              echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g')"
+            done
+          fi
+          exit "$rc"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
