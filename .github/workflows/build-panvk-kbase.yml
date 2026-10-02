@@ -24,7 +24,7 @@ jobs:
             libxshmfence-dev libdrm-dev libwayland-dev wayland-protocols \
             libvulkan-dev zlib1g-dev libexpat1-dev libunwind-dev libzstd-dev \
             libelf-dev libclang-dev llvm-dev clang \
-            libllvmspirvlib-19-dev spirv-tools \
+            libllvmspirvlib-19-dev libclc-19-dev spirv-tools \
             libxcb-randr0-dev libxcb-glx0-dev libxcb-shm0-dev \
             libxcb-xfixes0-dev libxcb-dri3-dev libxcb-present-dev \
             libx11-xcb-dev libxcb-keysyms1-dev libxxf86vm-dev
@@ -39,6 +39,7 @@ jobs:
           set -o pipefail
           meson setup build-panvk \
             -Dpanvk-use-kbase=true \
+            -Dpanfrost-kmds=kbase,panthor \
             -Dvulkan-drivers=panfrost \
             -Dgallium-drivers=panfrost \
             -Dllvm=enabled \
@@ -48,20 +49,25 @@ jobs:
         if: failure()
         run: |
           # Job logs need admin to read via API; annotations are public.
-          # Surface the actual meson ERROR lines so the failure is diagnosable.
-          for f in configure.log build-panvk/meson-logs/meson-log.txt; do
-            if [ -f "$f" ]; then
-              grep -E "ERROR|error:|FAILED|Traceback" "$f" | tail -20 | \
-                while IFS= read -r line; do
-                  echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g; s/\r//g')"
-                done
-            fi
+          # Surface the actual meson/ninja failure lines so the run is
+          # diagnosable from outside the repo.
+          n=0
+          for f in configure.log build.log build-panvk/meson-logs/meson-log.txt; do
+            [ -f "$f" ] || continue
+            grep -E "ERROR|error:|FAILED|undefined reference|No such file|Traceback" "$f" 2>/dev/null | tail -10
+            echo "---- tail of $f ----"
+            tail -10 "$f"
+          done | while IFS= read -r line; do
+            n=$((n+1))
+            [ "$n" -gt 30 ] && break
+            echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g')"
           done
 
       - name: Build Mesa
         run: |
           cd build-panvk
-          ninja
+          set -o pipefail
+          ninja 2>&1 | tee ../build.log
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
