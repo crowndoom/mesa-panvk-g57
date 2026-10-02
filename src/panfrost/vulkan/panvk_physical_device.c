@@ -1044,20 +1044,25 @@ panvk_physical_device_init(struct panvk_physical_device *device,
 
    device->formats.all = pan_format_table(arch);
    if (!device->formats.all) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "no format table for arch %u", (unsigned)arch);
       goto fail;
    }
 
    device->formats.blendable = pan_blendable_format_table(arch);
    if (!device->formats.blendable) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "no blendable format table for arch %u",
+                            (unsigned)arch);
       goto fail;
    }
 
    unsigned core_count =
       pan_query_core_count(&device->kmod.dev->props);
    if (!core_count) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "no shader cores reported for gpu_id 0x%" PRIx64,
+                            device->kmod.dev->props.gpu_id);
       goto fail;
    }
 
@@ -1112,10 +1117,21 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    if (result != VK_SUCCESS)
       goto fail;
 
+   /* vk_physical_device_init() memset()s the whole struct, so
+    * supported_sync_types stays NULL until we copy device->sync_types into it.
+    * The guard below therefore has to run *after* the copy: when it ran
+    * before, both init paths unconditionally returned
+    * VK_ERROR_INITIALIZATION_FAILED, i.e. zero physical devices ever got
+    * enumerated and loaders were handed a NULL VkPhysicalDevice. */
+   device->vk.supported_sync_types = device->sync_types;
+
    /* initialize disk cache after vk_physical_device_init */
    init_shader_caches(device, instance);
-   if (!device->vk.supported_sync_types) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+   if (!device->vk.supported_sync_types ||
+       !device->vk.supported_sync_types[0]) {
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "no usable sync types for arch %u",
+                            (unsigned)arch);
       goto fail;
    }
 
@@ -1123,11 +1139,11 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    panvk_arch_dispatch(arch, get_physical_device_properties, instance, device,
                        &device->vk.properties);
    if (!device->vk.properties.apiVersion) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "physical device properties missing for arch %u",
+                            (unsigned)arch);
       goto fail;
    }
-
-   device->vk.supported_sync_types = device->sync_types;
 
    result = panvk_wsi_init(device);
    if (result != VK_SUCCESS)
@@ -1195,20 +1211,25 @@ panvk_physical_device_init_kbase(struct panvk_physical_device *device,
 
    device->formats.all = pan_format_table(arch);
    if (!device->formats.all) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "no format table for arch %u", (unsigned)arch);
       goto fail_kbase;
    }
 
    device->formats.blendable = pan_blendable_format_table(arch);
    if (!device->formats.blendable) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "no blendable format table for arch %u",
+                            (unsigned)arch);
       goto fail_kbase;
    }
 
    unsigned core_count =
       pan_query_core_count(&device->kmod.dev->props);
    if (!core_count) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "no shader cores reported for gpu_id 0x%" PRIx64,
+                            device->kmod.dev->props.gpu_id);
       goto fail_kbase;
    }
 
@@ -1270,20 +1291,27 @@ panvk_physical_device_init_kbase(struct panvk_physical_device *device,
    if (result != VK_SUCCESS)
       goto fail_kbase;
 
+   /* Same ordering requirement as the DRM path above: copy the sync types
+    * into the (zeroed) vk_physical_device before testing them. */
+   device->vk.supported_sync_types = device->sync_types;
+
    init_shader_caches(device, instance);
-   if (!device->vk.supported_sync_types) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+   if (!device->vk.supported_sync_types ||
+       !device->vk.supported_sync_types[0]) {
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "no usable sync types for arch %u",
+                            (unsigned)arch);
       goto fail_kbase;
    }
 
    panvk_arch_dispatch(arch, get_physical_device_properties, instance, device,
                        &device->vk.properties);
    if (!device->vk.properties.apiVersion) {
-      result = VK_ERROR_INITIALIZATION_FAILED;
+      result = panvk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+                            "physical device properties missing for arch %u",
+                            (unsigned)arch);
       goto fail_kbase;
    }
-
-   device->vk.supported_sync_types = device->sync_types;
 
    result = panvk_wsi_init(device);
    if (result != VK_SUCCESS)

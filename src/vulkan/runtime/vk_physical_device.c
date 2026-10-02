@@ -27,6 +27,8 @@
 #include "vk_device.h"
 #include "vk_util.h"
 
+#include "util/log.h"
+
 VkResult
 vk_physical_device_init(struct vk_physical_device *pdevice,
                         struct vk_instance *instance,
@@ -87,6 +89,21 @@ vk_common_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
                                              VkExtensionProperties *pProperties)
 {
    VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
+
+   /* Callers are allowed to reach us without a valid VkPhysicalDevice: a
+    * loader/app that sees vkEnumeratePhysicalDevices return 0 devices still
+    * holds a zeroed handle slot and may pass it straight through (Winlator's
+    * renderer does exactly this, and used to SIGSEGV with fault address 0x0).
+    * Bail out with a logged error instead of dereferencing NULL. */
+   if (pdevice == NULL || pPropertyCount == NULL) {
+      if (pPropertyCount != NULL)
+         *pPropertyCount = 0;
+      mesa_loge("vkEnumerateDeviceExtensionProperties: NULL VkPhysicalDevice "
+                "(%p) or pPropertyCount (%p)",
+                (void *)physicalDevice, (void *)pPropertyCount);
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
    VK_OUTARRAY_MAKE_TYPED(VkExtensionProperties, out, pProperties, pPropertyCount);
 
    for (int i = 0; i < VK_DEVICE_EXTENSION_COUNT; i++) {
