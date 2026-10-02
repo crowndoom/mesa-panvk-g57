@@ -36,12 +36,27 @@ jobs:
 
       - name: Configure Mesa
         run: |
+          set -o pipefail
           meson setup build-panvk \
             -Dpanvk-use-kbase=true \
             -Dvulkan-drivers=panfrost \
             -Dgallium-drivers=panfrost \
             -Dllvm=enabled \
-            -Dcpp_std=c++17
+            -Dcpp_std=c++17 2>&1 | tee configure.log
+
+      - name: Report configure errors
+        if: failure()
+        run: |
+          # Job logs need admin to read via API; annotations are public.
+          # Surface the actual meson ERROR lines so the failure is diagnosable.
+          for f in configure.log build-panvk/meson-logs/meson-log.txt; do
+            if [ -f "$f" ]; then
+              grep -E "ERROR|error:|FAILED|Traceback" "$f" | tail -20 | \
+                while IFS= read -r line; do
+                  echo "::error::$(printf '%s' "$line" | sed 's/%/%25/g; s/\r//g')"
+                done
+            fi
+          done
 
       - name: Build Mesa
         run: |
