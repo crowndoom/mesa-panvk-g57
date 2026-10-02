@@ -30,6 +30,11 @@ on:
         description: "Tag to create (leave empty to auto-generate adpkg-<date>-<time>-<sha>)"
         required: false
         default: ""
+      keep_symbols:
+        description: "Keep symtab in vulkan.panvk.so (for crash triage; bigger .so)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -519,8 +524,13 @@ jobs:
 
           cp mesa-src/build/src/panfrost/vulkan/libvulkan_panfrost.so "$OUT/vulkan.panvk.so"
           # The package is a shipping artifact; the unstripped .so stays
-          # available from the panvk-cross workflow.
-          "$TOOLCHAIN/bin/llvm-strip" --strip-unneeded "$OUT/vulkan.panvk.so"
+          # available from the panvk-cross workflow. keep_symbols=true skips
+          # the strip so a tombstone's rel_pc can be mapped to a function.
+          if [[ "${{ github.event.inputs.keep_symbols }}" == "true" ]]; then
+            echo "==== keep_symbols=true: leaving .symtab in place ===="
+          else
+            "$TOOLCHAIN/bin/llvm-strip" --strip-unneeded "$OUT/vulkan.panvk.so"
+          fi
           echo "==== driver size after strip ===="
           ls -lh "$OUT/vulkan.panvk.so"
 
