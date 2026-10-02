@@ -66,10 +66,17 @@ pan_image_layout_init(
    unsigned arch, struct pan_image *image, unsigned plane_idx,
    const struct pan_image_layout_constraints *explicit_layout_constraints)
 {
-   assert(image->mod_handler);
-   assert(plane_idx < ARRAY_SIZE(image->planes) &&
-          plane_idx < util_format_get_num_planes(image->props.format));
-   assert(image->planes[plane_idx]);
+   /* These were plain asserts, which release builds compile out. We do reach
+    * this with a NULL mod_handler in practice: gralloc backends that cannot
+    * report a tiling hand back DRM_FORMAT_MOD_INVALID, and
+    * pan_mod_get_handler() has no handler for it. Dereferencing the result
+    * killed the whole process two statements later, at
+    * mod_handler->init_plane_layout (SIGSEGV, fault address 0x10).
+    * Fail image creation instead.
+    */
+   if (!image->mod_handler || plane_idx >= ARRAY_SIZE(image->planes) ||
+       !image->planes[plane_idx])
+      return false;
 
    const struct pan_mod_handler *mod_handler = image->mod_handler;
    const struct pan_image_props *props = &image->props;

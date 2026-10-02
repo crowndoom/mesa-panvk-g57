@@ -23,6 +23,7 @@
 #include "panvk_physical_device.h"
 
 #include "drm-uapi/drm_fourcc.h"
+#include "util/log.h"
 #include "util/u_atomic.h"
 #include "util/u_debug.h"
 #include "util/u_drm.h"
@@ -322,6 +323,31 @@ panvk_image_get_explicit_mod(
 {
    uint64_t mod = explicit->drmFormatModifier;
 
+   /* Mesa's fallback gralloc backend -- the one picked when no IMapper4 or
+    * minigbm backend is available, which is what runs here -- cannot report a
+    * tiling and always answers DRM_FORMAT_MOD_INVALID for non-YUV buffers.
+    * That value has no pan_mod_handler, so it used to be passed straight into
+    * pan_image_layout_init(), where the NULL handler was dereferenced and the
+    * process was SIGSEGV'd the first time a swapchain was created.
+    *
+    * The buffer's real plane layout still arrives as the explicit
+    * VkSubresourceLayout array, so assume LINEAR -- the same tiling the WSI /
+    * scanout path already forces for this driver -- and report that we had to
+    * guess. Anything else keeps flowing through unchanged and is rejected
+    * with a VK_ERROR_INITIALIZATION_FAILED naming the modifier.
+    */
+   if (mod == DRM_FORMAT_MOD_INVALID) {
+      mesa_loge_once("panvk: gralloc reported no DRM modifier for imported "
+                     "image (vk format 0x%x, %u planes, rowPitch %llu); "
+                     "assuming DRM_FORMAT_MOD_LINEAR",
+                     (unsigned)image->vk.format,
+                     explicit->drmFormatModifierPlaneCount,
+                     (unsigned long long)(explicit->drmFormatModifierPlaneCount
+                                             ? explicit->pPlaneLayouts[0].rowPitch
+                                             : 0));
+      mod = DRM_FORMAT_MOD_LINEAR;
+   }
+
    assert(!vk_format_is_depth_or_stencil(image->vk.format));
    assert(image->vk.samples == 1);
    assert(image->vk.array_layers == 1);
@@ -468,6 +494,15 @@ panvk_image_init_layouts(struct panvk_image *image,
 
    const struct pan_mod_handler *mod_handler =
       pan_mod_get_handler(arch, image->vk.drm_format_mod);
+
+   if (!mod_handler)
+      return panvk_errorf(image->vk.base.device,
+                          VK_ERROR_INITIALIZATION_FAILED,
+                          "panvk: no mod handler for DRM modifier 0x%016llx "
+                          "(arch %u, vk format 0x%x, plane count %u)",
+                          (unsigned long long)image->vk.drm_format_mod,
+                          arch, (unsigned)image->vk.format,
+                          (unsigned)image->plane_count);
 
    /* initialize pan_image props and mod_handler */
    if (panvk_image_use_yuv_tex(arch, image->vk.format)) {
