@@ -4,7 +4,9 @@
  */
 
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <xf86drm.h>
 
 #include "util/cache_ops.h"
@@ -213,6 +215,19 @@ pan_kmod_bo_import(struct pan_kmod_dev *dev, int fd)
                    "trying import anyway",
                    fd, size == (size_t)-1 ? strerror(errno) : "zero size");
          size = 0;
+      }
+
+      /* Name the fd for triage: dma-bufs show as anon_inode:dmabuf, anything
+       * else (socket, pipe, sync_file) means the producer handed us something
+       * the kernel can never import.
+       */
+      {
+         char fd_path[64], fd_target[128] = { 0 };
+         snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+         ssize_t link_len =
+            readlink(fd_path, fd_target, sizeof(fd_target) - 1);
+         mesa_loge("pan_kmod: importing fd %d (-> %s) size hint %zu", fd,
+                   link_len > 0 ? fd_target : "unknown", size);
       }
 
       bo = dev->ops->bo_import_fd(dev, fd, size);
