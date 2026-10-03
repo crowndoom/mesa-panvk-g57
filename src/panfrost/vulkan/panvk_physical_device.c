@@ -1176,6 +1176,12 @@ panvk_physical_device_init_kbase(struct panvk_physical_device *device,
 
    unsigned arch = pan_arch(device->kmod.dev->props.gpu_id);
 
+   /* Build stamp: proves exactly which commit this .so was built from. Shows
+    * up in every run log unconditionally, so a stale install can never be
+    * mistaken for a fresh build again. */
+   mesa_logi("panvk-g57: driver build %s (kbase JM, arch %u)", MESA_GIT_SHA1,
+             arch);
+
    bool unknown_gpu;
    result = get_gpu_model(device, instance, &unknown_gpu);
    if (result != VK_SUCCESS)
