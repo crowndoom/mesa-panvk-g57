@@ -257,7 +257,7 @@ panvk_android_import_ahb_memory(VkDevice device,
    VK_FROM_HANDLE(vk_device, dev, device);
    const native_handle_t *handle = AHardwareBuffer_getNativeHandle(ahb);
    assert(handle && handle->numFds > 0);
-   int dma_buf_fd = handle->data[0];
+   int dma_buf_fd = vk_android_pick_dma_buf_fd(handle);
    VkResult result;
 
    VkImage img_handle = VK_NULL_HANDLE;

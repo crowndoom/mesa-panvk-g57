@@ -200,6 +200,26 @@ vk_gralloc_to_drm_explicit_layout(
    return VK_SUCCESS;
 }
 
+int
+vk_android_pick_dma_buf_fd(const struct native_handle *handle)
+{
+   const native_handle_t *hnd = (const native_handle_t *)handle;
+   int best = hnd->data[0];
+   off_t best_size = lseek(best, 0, SEEK_END);
+   for (int i = 1; i < hnd->numFds; i++) {
+      off_t size = lseek(hnd->data[i], 0, SEEK_END);
+      if (size > best_size) {
+         best = hnd->data[i];
+         best_size = size;
+      }
+   }
+   if (best != hnd->data[0])
+      mesa_logi("vk_android: picked fd %d (size %lld) over fd %d for %d-fd "
+                "handle", best, (long long)best_size, hnd->data[0],
+                hnd->numFds);
+   return best;
+}
+
 VkResult
 vk_android_import_anb_memory(struct vk_device *device,
                              struct vk_image *image,
@@ -208,7 +228,7 @@ vk_android_import_anb_memory(struct vk_device *device,
 {
    assert(anb && anb->handle && anb->handle->numFds > 0);
 
-   int dma_buf_fd = anb->handle->data[0];
+   int dma_buf_fd = vk_android_pick_dma_buf_fd(anb->handle);
 
    /* Query image memory requirements for size and supported memory types */
    VkMemoryRequirements mem_reqs;
@@ -1099,13 +1119,14 @@ vk_common_GetAndroidHardwareBufferPropertiesANDROID(
 
    const native_handle_t *handle = AHardwareBuffer_getNativeHandle(buffer);
    assert(handle && handle->numFds > 0);
-   pProperties->allocationSize = lseek(handle->data[0], 0, SEEK_END);
+   int dma_buf_fd = vk_android_pick_dma_buf_fd(handle);
+   pProperties->allocationSize = lseek(dma_buf_fd, 0, SEEK_END);
 
    VkMemoryFdPropertiesKHR fd_props = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR,
    };
    result = device->dispatch_table.GetMemoryFdPropertiesKHR(
-      device_h, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, handle->data[0],
+      device_h, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_buf_fd,
       &fd_props);
    if (result != VK_SUCCESS)
       return result;

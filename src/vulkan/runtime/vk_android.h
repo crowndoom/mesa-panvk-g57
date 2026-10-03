@@ -37,10 +37,18 @@ extern "C" {
 struct u_gralloc;
 struct vk_device;
 struct vk_image;
+struct native_handle;
 
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
 
 struct u_gralloc *vk_android_get_ugralloc(void);
+
+/* Multi-fd gralloc handles (notably MediaTek's) bundle a tiny gralloc_extra
+ * metadata fd next to the real pixel dma-buf. Blindly using data[0] imports
+ * metadata and dies in the kernel with ENOMEM. The pixel buffer dwarfs the
+ * metadata, so this returns the fd with the largest seekable size.
+ */
+int vk_android_pick_dma_buf_fd(const struct native_handle *handle);
 
 VkResult vk_android_import_anb(struct vk_device *device,
                                const VkImageCreateInfo *pCreateInfo,
@@ -95,6 +103,12 @@ vk_android_init_deferred_image(struct vk_device *device,
                                const VkAllocationCallbacks *pAllocator)
 {
    return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+static inline int
+vk_android_pick_dma_buf_fd(const struct native_handle *handle)
+{
+   return -1;
 }
 
 #endif
