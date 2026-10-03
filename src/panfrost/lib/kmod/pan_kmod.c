@@ -201,8 +201,18 @@ pan_kmod_bo_import(struct pan_kmod_dev *dev, int fd)
    if (dev->ops->bo_import_fd) {
       size_t size = lseek(fd, 0, SEEK_END);
       if (size == 0 || size == (size_t)-1) {
-         mesa_loge("invalid dmabuf size");
-         goto err_unlock;
+         /* Non-DRM backends (kbase) import by fd and learn the real size
+          * from the kernel at import time; the lseek result is only a hint
+          * there. Some producer fds (notably Wine/WSI swapchain buffers)
+          * don't support SEEK_END, and rejecting them here made every
+          * Vulkan app die in vkImportMemoryFdKHR with "invalid dmabuf
+          * size". Pass 0 and let the import ioctl -- the real validation --
+          * decide.
+          */
+         mesa_logd("pan_kmod: import fd %d has no seekable size (%s), "
+                   "trying import anyway",
+                   fd, size == (size_t)-1 ? strerror(errno) : "zero size");
+         size = 0;
       }
 
       bo = dev->ops->bo_import_fd(dev, fd, size);
@@ -237,7 +247,8 @@ pan_kmod_bo_import(struct pan_kmod_dev *dev, int fd)
    } else {
       size_t size = lseek(fd, 0, SEEK_END);
       if (size == 0 || size == (size_t)-1) {
-         mesa_loge("invalid dmabuf size");
+         mesa_loge("invalid dmabuf size for fd %d (%s)", fd,
+                   size == (size_t)-1 ? strerror(errno) : "zero size");
          goto err_close_handle;
       }
 
