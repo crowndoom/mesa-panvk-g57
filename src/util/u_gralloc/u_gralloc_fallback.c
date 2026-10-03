@@ -17,6 +17,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
 
 struct fallback_gralloc {
    struct u_gralloc base;
@@ -144,7 +145,25 @@ fallback_gralloc_get_buffer_info(struct u_gralloc *gralloc,
    out->drm_fourcc = drm_fourcc;
    out->modifier = DRM_FORMAT_MOD_INVALID;
    out->num_planes = num_planes;
+   /* MediaTek's gralloc hands us multi-fd handles where data[0] is a
+    * gralloc_extra metadata buffer (anon_inode:gralloc_extra), not the pixel
+    * dma-buf -- importing it fails in the kernel with ENOMEM and kills every
+    * Vulkan swapchain. If data[0] has no seekable size, take the first later
+    * fd that does; otherwise keep data[0] exactly as before.
+    */
    out->fds[0] = hnd->handle->data[0];
+   if (lseek(out->fds[0], 0, SEEK_END) <= 0) {
+      for (int i = 1; i < hnd->handle->numFds; i++) {
+         off_t size = lseek(hnd->handle->data[i], 0, SEEK_END);
+         if (size > 0) {
+            mesa_logi("fallback gralloc: using fd index %d (size %lld) "
+                      "instead of unusable fd index 0",
+                      i, (long long)size);
+            out->fds[0] = hnd->handle->data[i];
+            break;
+         }
+      }
+   }
    out->strides[0] = stride;
 
 #ifdef HAS_FREEDRENO
