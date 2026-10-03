@@ -1775,16 +1775,35 @@ kbase_kmod_import_dmabuf(struct pan_kmod_dev *dev,
    if (kmod_flags & PAN_KMOD_BO_FLAG_WB_MMAP)
       import_flags |= BASE_MEM_CACHED_CPU;
 
-   int import_fd = kbase_bo->dmabuf_fd;
-   union kbase_ioctl_mem_import req = {
-      .in = {
-         .flags = import_flags,
-         .phandle = (uintptr_t)&import_fd,
-         .type = BASE_MEM_IMPORT_TYPE_UMM,
-      },
+   /* Some exporters -- Android gralloc CPU-uncached heaps in particular --
+    * reject the full coherency/shared flag set above with EINVAL. Retry once
+    * with the minimal GPU read/write set, which is all that GPU rendering and
+    * display need, before giving up on the import. */
+   const uint64_t flag_tries[] = {
+      import_flags,
+      BASE_MEM_PROT_GPU_RD | BASE_MEM_PROT_GPU_WR,
    };
 
-   if (ioctl(dev->fd, KBASE_IOCTL_MEM_IMPORT, &req)) {
+   int import_fd = kbase_bo->dmabuf_fd;
+   union kbase_ioctl_mem_import req;
+   unsigned t;
+   for (t = 0; t < ARRAY_SIZE(flag_tries); t++) {
+      req = (union kbase_ioctl_mem_import) {
+         .in = {
+            .flags = flag_tries[t],
+            .phandle = (uintptr_t)&import_fd,
+            .type = BASE_MEM_IMPORT_TYPE_UMM,
+         },
+      };
+
+      if (!ioctl(dev->fd, KBASE_IOCTL_MEM_IMPORT, &req))
+         break;
+
+      mesa_logd("kbase: KBASE_IOCTL_MEM_IMPORT failed with flags=0x%" PRIx64
+                ": %s", flag_tries[t], strerror(errno));
+   }
+
+   if (t == ARRAY_SIZE(flag_tries)) {
       mesa_loge("kbase: KBASE_IOCTL_MEM_IMPORT failed: %s", strerror(errno));
       goto err_close_dmabuf;
    }
@@ -1896,9 +1915,12 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev,
    uint64_t alloc_gpu_va;
 
    if (kmod_flags & PAN_KMOD_BO_FLAG_ALLOC_ON_FAULT) {
-      /* Growable region: nothing committed up-front, grown in 2 MB
-       * increments on GPU page fault (matches panfork's heap setup). */
-      commit_pages = 0;
+      /* Growable region: pre-commit the first 16 MB rather than starting at
+       * zero. A tiler heap that grows purely on GPU page fault pays the GPF
+       * latency on every increment, which on Arm kbase is long enough to trip
+       * the watchdog and get the context killed; the rest still grows in 2 MB
+       * increments on page fault (panfork's heap setup). */
+      commit_pages = MIN2(va_pages, (16 * 1024 * 1024) / page_size);
       extension = (2 * 1024 * 1024) / page_size;
    }
 

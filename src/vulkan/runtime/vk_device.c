@@ -42,6 +42,8 @@
 #include "util/ralloc.h"
 #include "util/timespec.h"
 
+#include <stdlib.h>
+
 /* Breaks linking cycles since WSI common depends on runtime,
  * and Meson does not allow runtime to depend on WSI common. */
 #include "vulkan/wsi/wsi_common_private.h"
@@ -477,11 +479,16 @@ vk_common_GetDeviceProcAddr(VkDevice _device,
         !strcmp(pName, "vkAcquireNextImageKHR") ||
         !strcmp(pName, "vkAcquireNextImage2KHR") ||
         !strcmp(pName, "vkQueuePresentKHR"))) {
-      fprintf(stderr,
-              "PANVKDBG GDPA name=%s fn=%p device=%p swapchain_ext=%d\\n",
-              pName, (void *)fn, (void *)device,
-              device->enabled_extensions.KHR_swapchain);
-      fflush(stderr);
+      /* Ungated on purpose would spam stderr for every swapchain query and is
+       * invisible in logcat anyway; keep it behind PANVK_G57_DEBUG like every
+       * other PANVKDBG probe in this driver. */
+      if (getenv("PANVK_G57_DEBUG")) {
+         fprintf(stderr,
+                 "PANVKDBG GDPA name=%s fn=%p device=%p swapchain_ext=%d\\n",
+                 pName, (void *)fn, (void *)device,
+                 device->enabled_extensions.KHR_swapchain);
+         fflush(stderr);
+      }
    }
 
    return fn;
@@ -538,9 +545,10 @@ vk_common_GetDeviceQueue2(VkDevice _device,
    }
 
    *pQueue = queue ? vk_queue_to_handle(queue) : VK_NULL_HANDLE;
-   fprintf(stderr, "PANVKDBG GetDeviceQueue2 family=%u idx=%u -> queue=%p (flags=0x%x, found=%d)\n",
-           pQueueInfo->queueFamilyIndex, pQueueInfo->queueIndex,
-           (void *)*pQueue, pQueueInfo->flags, queue != NULL);
+   if (getenv("PANVK_G57_DEBUG"))
+      fprintf(stderr, "PANVKDBG GetDeviceQueue2 family=%u idx=%u -> queue=%p (flags=0x%x, found=%d)\n",
+              pQueueInfo->queueFamilyIndex, pQueueInfo->queueIndex,
+              (void *)*pQueue, pQueueInfo->flags, queue != NULL);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
