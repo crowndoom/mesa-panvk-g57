@@ -1455,6 +1455,15 @@ wsi_CreateSwapchainKHR(VkDevice _device,
    struct wsi_interface *iface = wsi_device->force_headless_swapchain ?
       wsi_device->wsi[VK_ICD_WSI_PLATFORM_HEADLESS] :
       wsi_device->wsi[surface->platform];
+   /* Unconditional: fires once per swapchain, and we need to know which
+    * backend serves Wine surfaces on this setup. */
+   fprintf(stderr,
+           "panvk-wsi: create swapchain platform=%d format=%d extent=%ux%u "
+           "minImages=%u headless=%d sw=%d\n",
+           (int)surface->platform, pCreateInfo->imageFormat,
+           pCreateInfo->imageExtent.width, pCreateInfo->imageExtent.height,
+           pCreateInfo->minImageCount,
+           (int)wsi_device->force_headless_swapchain, (int)wsi_device->sw);
    const VkAllocationCallbacks *alloc;
    struct wsi_swapchain *swapchain;
 
@@ -2307,6 +2316,13 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
 
    VkResult result = swapchain->acquire_next_image(swapchain, pAcquireInfo,
                                                    pImageIndex);
+
+   /* Unconditional: Wine's loader thunk aborts on any non-success (including
+    * SUBOPTIMAL), so the code must be visible to triage present failures. */
+   if (result != VK_SUCCESS) {
+      fprintf(stderr, "panvk-wsi: acquire_next_image failed: result=%d\n",
+              (int)result);
+   }
 
    if (wsi_g57_debug_enabled())
       fprintf(stderr,
