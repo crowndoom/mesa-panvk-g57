@@ -249,6 +249,12 @@ panvk_per_arch(get_physical_device_extensions)(
       .ARM_scheduling_controls = true,
       .ARM_rasterization_order_attachment_access = PAN_ARCH >= 10,
    };
+
+   /* Triage: proves whether PANVK_USE_WSI_PLATFORM was defined in this build
+    * (Android-only builds silently lacked all WSI extensions before f134daa).
+    */
+   mesa_logi("panvk-g57: WSI platform support: wsi=%d swapchain=%d",
+             (int)ext->KHR_surface, (int)ext->KHR_swapchain);
 }
 
 static bool

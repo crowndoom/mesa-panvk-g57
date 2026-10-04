@@ -36,6 +36,7 @@
 #include "vk_util.h"
 #include "util/compiler.h"
 #include "util/detect_os.h"
+#include "util/log.h"
 #include "util/u_debug.h"
 #include "util/hash_table.h"
 #include "util/perf/cpu_trace.h"
@@ -188,6 +189,14 @@ vk_device_init(struct vk_device *device,
                     vk_device_extensions[idx].extensionName) == 0)
             break;
       }
+
+      /* Triage: shows exactly which device extensions the app requested and
+       * which ones this build supports (Wine+PanVK swapchain debugging). */
+      mesa_logi("panvk-g57: device ext request: %s (known=%d supported=%d)",
+                pCreateInfo->ppEnabledExtensionNames[i],
+                idx < VK_DEVICE_EXTENSION_COUNT,
+                idx < VK_DEVICE_EXTENSION_COUNT &&
+                   physical_device->supported_extensions.extensions[idx]);
 
       if (idx >= VK_DEVICE_EXTENSION_COUNT)
          return vk_errorf(physical_device, VK_ERROR_EXTENSION_NOT_PRESENT,
