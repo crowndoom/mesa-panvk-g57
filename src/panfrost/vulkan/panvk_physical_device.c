@@ -1178,9 +1178,14 @@ panvk_physical_device_init_kbase(struct panvk_physical_device *device,
 
    /* Build stamp: proves exactly which commit this .so was built from. Shows
     * up in every run log unconditionally, so a stale install can never be
-    * mistaken for a fresh build again. */
-   mesa_logi("panvk-g57: driver build %s (kbase JM, arch %u)", MESA_GIT_SHA1,
-             arch);
+    * mistaken for a fresh build again. CI passes -DPANVK_G57_BUILD_SHA; the
+    * MESA_GIT_SHA1 fallback covers local builds (empty in CI's tar copy,
+    * which carries no .git metadata for the version script). */
+#ifndef PANVK_G57_BUILD_SHA
+#define PANVK_G57_BUILD_SHA MESA_GIT_SHA1
+#endif
+   mesa_logi("panvk-g57: driver build %s (kbase JM, arch %u)",
+             PANVK_G57_BUILD_SHA, arch);
 
    bool unknown_gpu;
    result = get_gpu_model(device, instance, &unknown_gpu);

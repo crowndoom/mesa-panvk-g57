@@ -48,6 +48,7 @@ jobs:
       stamp: ${{ steps.ts.outputs.stamp }}
       tag:   ${{ steps.ts.outputs.tag }}
       types: ${{ steps.ts.outputs.types }}
+      short_sha: ${{ steps.ts.outputs.short_sha }}
     steps:
       - name: Compute build timestamp, tag and types
         id: ts
@@ -424,6 +425,11 @@ jobs:
         working-directory: mesa-src
         env:
           PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
+          # Build stamp: the tar-copied tree carries no .git metadata, so the
+          # version script leaves MESA_GIT_SHA1 empty. Pass the built commit
+          # explicitly so the driver can log it at init (see
+          # PANVK_G57_BUILD_SHA in panvk_physical_device.c).
+          CFLAGS: -DPANVK_G57_BUILD_SHA='"${{ needs.prepare.outputs.short_sha }}"'
         run: |
           set -euo pipefail
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
