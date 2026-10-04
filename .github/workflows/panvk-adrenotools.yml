@@ -425,12 +425,18 @@ jobs:
         working-directory: mesa-src
         env:
           PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
-          # Build stamp: the tar-copied tree carries no .git metadata, so the
-          # version script leaves MESA_GIT_SHA1 empty. Pass the built commit
-          # explicitly so the driver can log it at init (see
-          # PANVK_G57_BUILD_SHA in panvk_physical_device.c).
-          CFLAGS: -DPANVK_G57_BUILD_SHA='"${{ needs.prepare.outputs.short_sha }}"'
         run: |
+          set -euo pipefail
+          # Build stamp: the tar-copied tree carries no .git metadata, so the
+          # version script leaves MESA_GIT_SHA1 empty. Drop a header next to
+          # panvk_physical_device.c (picked up via __has_include) so the
+          # driver logs the exact built commit at init. (Passing it through
+          # CFLAGS was tried and silently dropped by meson cross builds.)
+          cat > src/panfrost/vulkan/panvk_build_sha.h <<EOF
+          #pragma once
+          #define PANVK_G57_BUILD_SHA "${{ needs.prepare.outputs.short_sha }}"
+          EOF
+          cat src/panfrost/vulkan/panvk_build_sha.h
           set -euo pipefail
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
           export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
