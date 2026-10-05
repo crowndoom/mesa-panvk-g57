@@ -642,6 +642,21 @@ jobs:
       - name: List downloaded files
         run: find artifacts -type f -name '*.zip'
 
+      - name: Write SHA256SUMS and build provenance
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum *.zip > SHA256SUMS
+          cat SHA256SUMS
+          cat > build-provenance.txt <<EOF
+          tag: ${{ needs.prepare.outputs.tag }}
+          commit: ${{ github.sha }}
+          date (UTC): ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }}
+          workflow: panvk-adrenotools.yml
+          build types: ${{ needs.prepare.outputs.types }}
+          EOF
+          cat build-provenance.txt
+
       - name: Create GitHub Release for this build
         uses: softprops/action-gh-release@v2
         with:
@@ -659,9 +674,11 @@ jobs:
             **Build time (UTC):** `${{ needs.prepare.outputs.time }}`
             **Commit:** `${{ github.sha }}`
             **Build types:** `${{ needs.prepare.outputs.types }}`
+            Verify integrity with `SHA256SUMS` (also attached).
 
             ### Files
             - `panvk-adrenotools-aarch64-*-*.zip`
+            - `SHA256SUMS`, `build-provenance.txt`
 
             ### Install
             1. Import the `.zip` through the emulator's AdrenoTools /
@@ -676,7 +693,10 @@ jobs:
             - no `libxcb` / `libX11` / `libxshmfence`
             - `HMI` (hwvulkan HAL) exported after strip
             - bundled libs may only depend on Android system libraries
-          files: artifacts/*.zip
+          files: |
+            artifacts/*.zip
+            artifacts/SHA256SUMS
+            artifacts/build-provenance.txt
           overwrite_files: true
           fail_on_unmatched_files: true
           prerelease: true
