@@ -253,8 +253,13 @@ panvk_per_arch(get_physical_device_extensions)(
    /* Triage: proves whether PANVK_USE_WSI_PLATFORM was defined in this build
     * (Android-only builds silently lacked all WSI extensions before f134daa).
     */
-   mesa_logi("panvk-g57: WSI platform support: wsi=%d swapchain=%d",
-             (int)ext->KHR_surface, (int)ext->KHR_swapchain);
+#ifdef PANVK_USE_WSI_PLATFORM
+   mesa_logi("panvk-g57: WSI platform support: wsi=1 swapchain=%d",
+             (int)ext->KHR_swapchain);
+#else
+   mesa_logi("panvk-g57: WSI platform support: wsi=0 swapchain=%d",
+             (int)ext->KHR_swapchain);
+#endif
 }
 
 static bool
