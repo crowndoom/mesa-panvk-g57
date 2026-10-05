@@ -558,7 +558,7 @@ jobs:
           cat > "$OUT/meta.json" <<EOF
           {
             "schemaVersion": 1,
-            "name": "Mesa PanVK Mali-G57",
+            "name": "Mesa PanVK Mali-G57 ${{ needs.prepare.outputs.short_sha }}",
             "description": "Experimental Mesa PanVK Vulkan driver for ARM Mali-G57 (kbase job manager), built from source for AdrenoTools-compatible loaders.",
             "author": "crowndoom",
             "packageVersion": "${{ needs.prepare.outputs.stamp }}",
