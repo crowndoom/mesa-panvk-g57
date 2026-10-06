@@ -571,6 +571,22 @@ jobs:
           echo "==== meta.json ===="
           cat "$OUT/meta.json"
 
+          # ---- Vulkan loader ICD manifest --------------------------------
+          # Lets Wine/the loader use this driver directly (VK_ICD_FILENAMES
+          # pointing at this file) instead of going through a wrapper ICD.
+          # library_path is relative: loaders resolve it against this dir.
+          cat > "$OUT/vulkan.panvk.json" <<EOF
+          {
+              "file_format_version": "1.0.0",
+              "ICD": {
+                  "library_path": "vulkan.panvk.so",
+                  "api_version": "1.3.0"
+              }
+          }
+          EOF
+          echo "==== vulkan.panvk.json ===="
+          cat "$OUT/vulkan.panvk.json"
+
           # ---- bundle every dependency that is not an Android system lib --
           # The adrenotools hook creates a linker namespace whose search path
           # is this directory, so bundled sonames do resolve (ADPKG.md).
@@ -683,6 +699,9 @@ jobs:
             ### Install
             1. Import the `.zip` through the emulator's AdrenoTools /
                custom-driver menu (no extraction needed).
+               To load the driver directly instead of through a wrapper ICD,
+               set `VK_ICD_FILENAMES` to the `vulkan.panvk.json` inside the
+               installed driver directory.
             2. The package already carries `libdrm.so` and
                `libc++_shared.so`; everything else in `DT_NEEDED`
                (`libhardware`, `libnativewindow`, `libz`, `libm`,
