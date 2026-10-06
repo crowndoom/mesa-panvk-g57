@@ -469,6 +469,9 @@ vk_common_AcquireImageANDROID(VkDevice _device,
     * the file descriptor to be left alone on failure.
     */
    int semaphore_fd = -1, fence_fd = -1;
+   mesa_logi("panvk-g57: AcquireImageANDROID fenceFd=%d sem=%d fence=%d",
+             nativeFenceFd, semaphore != VK_NULL_HANDLE,
+             fence != VK_NULL_HANDLE);
    if (nativeFenceFd >= 0) {
       if (semaphore != VK_NULL_HANDLE && fence != VK_NULL_HANDLE) {
          /* We have both so we have to import the sync file twice. One of
@@ -522,6 +525,7 @@ vk_common_AcquireImageANDROID(VkDevice _device,
       close(semaphore_fd);
    if (fence_fd >= 0)
       close(fence_fd);
+   mesa_logi("panvk-g57: AcquireImageANDROID result=%d", result);
 
    return result;
 }
@@ -555,6 +559,8 @@ vk_common_QueueSignalReleaseImageANDROID(VkQueue _queue,
    VK_FROM_HANDLE(vk_queue, queue, _queue);
    struct vk_device *device = queue->base.device;
    VkResult result;
+   mesa_logi("panvk-g57: QueueSignalReleaseImageANDROID waits=%u",
+             waitSemaphoreCount);
 
    if (waitSemaphoreCount == 0) {
       *pNativeFenceFd = -1;

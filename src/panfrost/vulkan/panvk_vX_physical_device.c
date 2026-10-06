@@ -62,13 +62,19 @@ panvk_per_arch(get_physical_device_extensions)(
       .KHR_driver_properties = true,
       .KHR_dynamic_rendering = true,
       .KHR_dynamic_rendering_local_read = true,
-      /* ADHOC-DBG: hide external memory group to avoid Wine win32 ext mismatch */
+      /* G57: Wine/Winlator presents via VK_ANDROID_native_buffer and moves the
+       * acquire/release fences through vkImportSemaphoreFdKHR /
+       * vkGetSemaphoreFdKHR (SYNC_FD). The semaphore pair must be advertised
+       * or every vkAcquireNextImageKHR aborts the container (black screen);
+       * the kbase CPU sync type implements import/export_sync_file. The
+       * still-unused memory/fence fd groups stay hidden.
+       */
       .KHR_external_fence = false,
       .KHR_external_fence_fd = false,
       .KHR_external_memory = false,
       .KHR_external_memory_fd = false,
-      .KHR_external_semaphore = false,
-      .KHR_external_semaphore_fd = false,
+      .KHR_external_semaphore = true,
+      .KHR_external_semaphore_fd = true,
       .KHR_format_feature_flags2 = true,
       .KHR_get_memory_requirements2 = true,
       .KHR_global_priority = true,

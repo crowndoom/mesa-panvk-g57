@@ -37,6 +37,7 @@
 #include "vk_log.h"
 #include "vk_physical_device.h"
 #include "vk_util.h"
+#include "util/log.h"
 
 static VkExternalSemaphoreHandleTypeFlags
 vk_sync_semaphore_import_types(const struct vk_sync_type *type,
@@ -549,6 +550,11 @@ vk_common_ImportSemaphoreFdKHR(VkDevice _device,
       pImportSemaphoreFdInfo->handleType;
 
    struct vk_sync *temporary = NULL, *sync;
+   mesa_logi("panvk-g57: ImportSemaphoreFdKHR handle=0x%x temporary=%d fd=%d",
+             (unsigned)handle_type,
+             !!(pImportSemaphoreFdInfo->flags &
+                VK_SEMAPHORE_IMPORT_TEMPORARY_BIT),
+             fd);
    if (pImportSemaphoreFdInfo->flags & VK_SEMAPHORE_IMPORT_TEMPORARY_BIT) {
       /* From the Vulkan 1.2.194 spec:
        *
@@ -605,6 +611,7 @@ vk_common_ImportSemaphoreFdKHR(VkDevice _device,
    if (result != VK_SUCCESS) {
       if (temporary != NULL)
          vk_sync_destroy(device, temporary);
+      mesa_logi("panvk-g57: ImportSemaphoreFdKHR failed: result=%d", result);
       return result;
    }
 
@@ -629,6 +636,8 @@ vk_common_ImportSemaphoreFdKHR(VkDevice _device,
       vk_semaphore_reset_temporary(device, semaphore);
       semaphore->temporary = temporary;
    }
+   mesa_logi("panvk-g57: ImportSemaphoreFdKHR ok: handle=0x%x",
+             (unsigned)handle_type);
 
    return VK_SUCCESS;
 }
@@ -640,6 +649,8 @@ vk_common_GetSemaphoreFdKHR(VkDevice _device,
 {
    VK_FROM_HANDLE(vk_device, device, _device);
    VK_FROM_HANDLE(vk_semaphore, semaphore, pGetFdInfo->semaphore);
+   mesa_logi("panvk-g57: GetSemaphoreFdKHR handle=0x%x",
+             (unsigned)pGetFdInfo->handleType);
 
    assert(pGetFdInfo->sType == VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR);
 
@@ -724,6 +735,8 @@ vk_common_GetSemaphoreFdKHR(VkDevice _device,
     *    payload will be restored."
     */
    vk_semaphore_reset_temporary(device, semaphore);
+   mesa_logi("panvk-g57: GetSemaphoreFdKHR ok: handle=0x%x outFd=%d",
+             (unsigned)pGetFdInfo->handleType, *pFd);
 
    return VK_SUCCESS;
 }
