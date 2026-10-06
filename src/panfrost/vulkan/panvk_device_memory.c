@@ -23,6 +23,7 @@
 #include "util/u_atomic.h"
 #include "vk_debug_utils.h"
 #include "vk_log.h"
+#include "util/log.h"
 
 static void
 panvk_memory_emit_report(struct panvk_device *device,
@@ -508,12 +509,15 @@ panvk_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo,
    assert(
       pGetFdInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
       pGetFdInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+   mesa_logi("panvk-g57: GetMemoryFdKHR handle=0x%x",
+             (unsigned)pGetFdInfo->handleType);
 
    int prime_fd = pan_kmod_bo_export(memory->bo);
    if (prime_fd < 0)
       return panvk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    *pFd = prime_fd;
+   mesa_logi("panvk-g57: GetMemoryFdKHR ok: fd=%d", prime_fd);
    return VK_SUCCESS;
 }
 
@@ -528,6 +532,7 @@ panvk_GetMemoryFdPropertiesKHR(VkDevice _device,
       to_panvk_physical_device(device->vk.physical);
 
    assert(handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+   mesa_logi("panvk-g57: GetMemoryFdPropertiesKHR fd=%d", fd);
 
    struct pan_kmod_bo *bo = pan_kmod_bo_import(device->kmod.dev, fd);
    if (!bo)
@@ -560,6 +565,8 @@ panvk_GetMemoryFdPropertiesKHR(VkDevice _device,
    }
 
    pan_kmod_bo_put(bo);
+   mesa_logi("panvk-g57: GetMemoryFdPropertiesKHR ok: typeBits=0x%x",
+             pMemoryFdProperties->memoryTypeBits);
    return VK_SUCCESS;
 }
 

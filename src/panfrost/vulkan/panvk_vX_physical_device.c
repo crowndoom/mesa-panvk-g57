@@ -64,15 +64,18 @@ panvk_per_arch(get_physical_device_extensions)(
       .KHR_dynamic_rendering_local_read = true,
       /* G57: Wine/Winlator presents via VK_ANDROID_native_buffer and moves the
        * acquire/release fences through vkImportSemaphoreFdKHR /
-       * vkGetSemaphoreFdKHR (SYNC_FD). The semaphore pair must be advertised
-       * or every vkAcquireNextImageKHR aborts the container (black screen);
-       * the kbase CPU sync type implements import/export_sync_file. The
-       * still-unused memory/fence fd groups stay hidden.
+       * vkGetSemaphoreFdKHR (SYNC_FD), and queries dma-buf memory properties
+       * via vkGetMemoryFdPropertiesKHR. These fd groups must be advertised
+       * (like the ARM vendor driver does) or every vkAcquireNextImageKHR
+       * aborts the container (black screen). The kbase CPU sync type
+       * implements import/export_sync_file, and prime fd import/export plus
+       * fd properties are implemented in panvk_device_memory.c. The
+       * still-unused fence fd group stays hidden.
        */
       .KHR_external_fence = false,
       .KHR_external_fence_fd = false,
-      .KHR_external_memory = false,
-      .KHR_external_memory_fd = false,
+      .KHR_external_memory = true,
+      .KHR_external_memory_fd = true,
       .KHR_external_semaphore = true,
       .KHR_external_semaphore_fd = true,
       .KHR_format_feature_flags2 = true,
