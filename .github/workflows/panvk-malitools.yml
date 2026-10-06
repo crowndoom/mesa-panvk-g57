@@ -1,6 +1,6 @@
-name: Build PanVK AdrenoTools package (Winlator / emulators)
+name: Build PanVK MaliTools package (Winlator / emulators)
 
-# Produces an AdrenoTools "ADPKG" driver package: a flat .zip containing
+# Produces a MaliTools "ADPKG" driver package (AdrenoTools-compatible format):
 #   meta.json        - package manifest (see libadrenotools tools/ADPKG.md)
 #   vulkan.panvk.so  - the PanVK driver, exposing the HMI hwvulkan HAL symbol
 #   <dep>.so         - any DT_NEEDED that is not part of the Android system libs
@@ -27,7 +27,7 @@ on:
           - release
           - debugoptimized
       release_tag:
-        description: "Tag to create (leave empty to auto-generate adpkg-<date>-<time>-<sha>)"
+        description: "Tag to create (leave empty to auto-generate malitools-<date>-<time>-<sha>)"
         required: false
         default: ""
       keep_symbols:
@@ -67,7 +67,7 @@ jobs:
           if [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
             TAG="${{ github.event.inputs.release_tag }}"
           else
-            TAG="adpkg-${DATE}-${TIME}-${SHORT_SHA}"
+            TAG="malitools-${DATE}-${TIME}-${SHORT_SHA}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -421,7 +421,7 @@ jobs:
           echo "==== pkg-config sanity ===="
           PKG_CONFIG_LIBDIR="$MESON_WORKING_DIR/shims" pkg-config --cflags --libs libdrm
 
-      - name: Configure meson (cross-compile, AdrenoTools target)
+      - name: Configure meson (cross-compile, MaliTools target)
         working-directory: mesa-src
         env:
           PKG_CONFIG_LIBDIR: ${{ github.workspace }}/mesa-src/shims
@@ -518,7 +518,7 @@ jobs:
           fi
           if [[ "$FAIL" -ne 0 ]]; then exit 1; fi
 
-      - name: Package AdrenoTools driver package (zip)
+      - name: Package MaliTools driver package (zip)
         run: |
           set -euo pipefail
 
@@ -530,7 +530,7 @@ jobs:
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
           API=30
 
-          OUT="adpkg-out"
+          OUT="malitools-out"
           rm -rf "$OUT"
           mkdir -p "$OUT"
 
@@ -559,7 +559,7 @@ jobs:
           {
             "schemaVersion": 1,
             "name": "Mesa PanVK Mali-G57 ${{ needs.prepare.outputs.short_sha }}",
-            "description": "Experimental Mesa PanVK Vulkan driver for ARM Mali-G57 (kbase job manager), built from source for AdrenoTools-compatible loaders.",
+            "description": "Experimental Mesa PanVK Vulkan driver for ARM Mali-G57 (kbase job manager), MaliTools ADPKG build for Winlator/emulator custom-driver menus.",
             "author": "crowndoom",
             "packageVersion": "${{ needs.prepare.outputs.stamp }}",
             "vendor": "Mesa",
@@ -616,7 +616,7 @@ jobs:
           echo "==== package contents ===="
           find "$OUT" -type f -printf '%f\t%s bytes\n' | sort
 
-          ZIPNAME="panvk-adrenotools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.zip"
+          ZIPNAME="panvk-malitools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.zip"
           ( cd "$OUT" && zip -9 -r "../$ZIPNAME" * )
           echo "==== $ZIPNAME ===="
           ls -lh "$ZIPNAME"
@@ -625,8 +625,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: panvk-adrenotools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}
-          path: panvk-adrenotools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.zip
+          name: panvk-malitools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}
+          path: panvk-malitools-aarch64-${{ matrix.build-type }}-${{ needs.prepare.outputs.stamp }}.zip
           if-no-files-found: error
 
   release:
@@ -652,7 +652,7 @@ jobs:
           tag: ${{ needs.prepare.outputs.tag }}
           commit: ${{ github.sha }}
           date (UTC): ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }}
-          workflow: panvk-adrenotools.yml
+          workflow: panvk-malitools.yml
           build types: ${{ needs.prepare.outputs.types }}
           EOF
           cat build-provenance.txt
@@ -661,13 +661,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
-          name: "PanVK AdrenoTools package — ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }} UTC"
+          name: "PanVK MaliTools package — ${{ needs.prepare.outputs.date }} ${{ needs.prepare.outputs.time }} UTC"
           body: |
-            ## PanVK AdrenoTools driver package (aarch64)
+            ## PanVK MaliTools driver package (aarch64, Mali-G57)
 
-            An AdrenoTools / ADPKG package: a flat `.zip` containing
-            `meta.json` + `vulkan.panvk.so` + the bundled non-system
-            dependencies, importable via Winlator's **AdrenoTools GPU
+            A MaliTools / ADPKG package (AdrenoTools-compatible format): a flat
+            `.zip` containing `meta.json` + `vulkan.panvk.so` + the bundled
+            non-system dependencies, importable via Winlator's **AdrenoTools GPU
             Drivers** menu and other libadrenotools consumers.
 
             **Build date (UTC):** `${{ needs.prepare.outputs.date }}`
@@ -677,7 +677,7 @@ jobs:
             Verify integrity with `SHA256SUMS` (also attached).
 
             ### Files
-            - `panvk-adrenotools-aarch64-*-*.zip`
+            - `panvk-malitools-aarch64-*-*.zip`
             - `SHA256SUMS`, `build-provenance.txt`
 
             ### Install

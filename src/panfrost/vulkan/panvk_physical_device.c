@@ -1233,7 +1233,7 @@ panvk_physical_device_init_kbase(struct panvk_physical_device *device,
    /* Build stamp: proves exactly which commit this .so was built from. Shows
     * up in every run log unconditionally, so a stale install can never be
     * mistaken for a fresh build again. CI writes panvk_build_sha.h next to
-    * this file (see panvk-adrenotools.yml); local builds fall back to
+    * this file (see panvk-malitools.yml); local builds fall back to
     * MESA_GIT_SHA1. (A CFLAGS-passed macro was tried first and silently
     * dropped by meson cross builds, so the stamp stayed blank -- the file
     * approach fails loudly at compile time instead.)
