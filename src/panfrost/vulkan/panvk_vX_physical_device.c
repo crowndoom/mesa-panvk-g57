@@ -69,11 +69,15 @@ panvk_per_arch(get_physical_device_extensions)(
        * (like the ARM vendor driver does) or every vkAcquireNextImageKHR
        * aborts the container (black screen). The kbase CPU sync type
        * implements import/export_sync_file, and prime fd import/export plus
-       * fd properties are implemented in panvk_device_memory.c. The
-       * still-unused fence fd group stays hidden.
+       * fd properties are implemented in panvk_device_memory.c. The fence
+       * pair uses the same sync-file hooks; EXT_external_memory_dma_buf and
+       * EXT_image_drm_format_modifier back the wrapper/zink WSI image path
+       * (modifier enumeration already implemented in panvk_physical_device.c,
+       * creation with explicit/list modifiers in panvk_image.c). The
+       * still-unused host-memory group stays hidden.
        */
-      .KHR_external_fence = false,
-      .KHR_external_fence_fd = false,
+      .KHR_external_fence = true,
+      .KHR_external_fence_fd = true,
       .KHR_external_memory = true,
       .KHR_external_memory_fd = true,
       .KHR_external_semaphore = true,
@@ -172,7 +176,7 @@ panvk_per_arch(get_physical_device_extensions)(
       .EXT_extended_dynamic_state2 = true,
       .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_acquire_unmodified = false,
-      .EXT_external_memory_dma_buf = false,
+      .EXT_external_memory_dma_buf = true,
       .EXT_global_priority = true,
       .EXT_global_priority_query = true,
       .EXT_graphics_pipeline_library = true,
@@ -181,7 +185,7 @@ panvk_per_arch(get_physical_device_extensions)(
       .EXT_host_query_reset = true,
       .EXT_image_2d_view_of_3d = true,
       /* EXT_image_drm_format_modifier depends on KHR_sampler_ycbcr_conversion */
-      .EXT_image_drm_format_modifier = false,
+      .EXT_image_drm_format_modifier = true,
       .EXT_image_robustness = true,
       .EXT_image_sliced_view_of_3d = true,
       .EXT_image_view_min_lod = true,
