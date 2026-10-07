@@ -59,6 +59,15 @@ panvk_per_arch(kbase_jm_submit)(struct vk_queue *vk_queue,
                                 struct panvk_device *dev,
                                 struct vk_queue_submit *submit);
 
+/* Every kbase JM submit reuses atom numbers 1 (vtc) and 2 (frag) on one fd
+ * whose completion events are consumed straight off it with read(). Two
+ * threads submitting at once collide on atom numbers (the kernel faults
+ * both atoms) and steal each other's events (hangs, wrong attribution).
+ * Multithreaded clients (DXVK) hit this reliably; single-threaded ones
+ * only by timing luck. Serialize submit+wait: submits here are synchronous
+ * anyway, so nothing is lost but the faults. */
+static simple_mtx_t panvk_kbase_jm_submit_lock = SIMPLE_MTX_INITIALIZER;
+
 /* kbase CPU syncs are resolved by the wait_many hook when someone waits on
  * them.  The JM backend submits jobs synchronously, so by the time the
  * signal is armed the GPU work is already done. */
@@ -731,6 +740,7 @@ panvk_per_arch(kbase_jm_submit)(struct vk_queue *vk_queue,
 
    pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
 
+   simple_mtx_lock(&panvk_kbase_jm_submit_lock);
    for (uint32_t j = 0; j < submit->command_buffer_count; ++j) {
       struct panvk_cmd_buffer *cmdbuf =
          container_of(submit->command_buffers[j], struct panvk_cmd_buffer, vk);
@@ -744,10 +754,13 @@ panvk_per_arch(kbase_jm_submit)(struct vk_queue *vk_queue,
       list_for_each_entry(struct panvk_batch, batch, &cmdbuf->batches, node) {
          VkResult result = panvk_kbase_jm_submit_batch(queue, cmdbuf, batch,
                                                       NULL, 0, NULL, 0);
-         if (result != VK_SUCCESS)
+         if (result != VK_SUCCESS) {
+            simple_mtx_unlock(&panvk_kbase_jm_submit_lock);
             return vk_queue_set_lost(vk_queue, "kbase JM submission failed");
+         }
       }
    }
+   simple_mtx_unlock(&panvk_kbase_jm_submit_lock);
 
    /* Jobs are submitted sychronously (each KBASE_IOCTL_JOB_SUBMIT is waited
     * on before the next one), so the out fence needs no GPU-side
