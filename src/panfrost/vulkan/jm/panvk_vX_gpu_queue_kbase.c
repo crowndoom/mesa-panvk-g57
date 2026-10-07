@@ -142,8 +142,13 @@ panvk_kbase_wait_jobs(struct panvk_device *dev,
       int ret = poll(&pfd, 1, (remaining + 999999) / 1000000);
       if (ret < 0 && errno == EINTR)
          continue;
-      if (ret <= 0 || !(pfd.revents & POLLIN))
+      if (ret <= 0 || !(pfd.revents & POLLIN)) {
+         mesa_loge("kbase: JD wait gave up with %u atoms unaccounted "
+                   "(poll ret=%d revents=0x%x); their late events will "
+                   "poison the next submit",
+                   count, ret, pfd.revents);
          return VK_ERROR_DEVICE_LOST;
+      }
 
       struct base_jd_event_v2 ev;
       ssize_t len = read(dev->kmod.dev->fd, &ev, sizeof(ev));
