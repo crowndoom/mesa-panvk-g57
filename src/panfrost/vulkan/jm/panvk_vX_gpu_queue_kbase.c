@@ -598,10 +598,8 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
       if (batch->frag_jc.first_job) {
          atoms[nr_atoms].jc = batch->frag_jc.first_job;
          atoms[nr_atoms].atom_number = 2;
-         if (batch->vtc_jc.first_job) {
-            atoms[nr_atoms].pre_dep[0].atom_id = 1;
-            atoms[nr_atoms].pre_dep[0].dependency_type = 1; /* DATA */
-         }
+         /* No pre_dep: ordering against the vtc atom below is enforced
+          * with CPU waits at submit time (see the nr_atoms block). */
          atoms[nr_atoms].core_req = frag_core;
          /* effect2d/shading frag chains can also touch WSI USER_BUFFERs
           * (meta-copy resolve). Advertise the same extres on frag, not
@@ -624,11 +622,11 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
       }
 
       if (nr_atoms) {
-         struct kbase_ioctl_job_submit submit = {
-            .addr = (uint64_t)(uintptr_t)atoms,
-            .nr_atoms = nr_atoms,
-            .stride = sizeof(atoms[0]),
-         };
+         /* Never submit a multi-atom bag with pre_dep: GPU-side dependency
+          * chaining faults both atoms (0x58 DATA_INVALID_FAULT) on this
+          * kernel under timing pressure. Order the atoms with CPU waits
+          * instead; submits here are synchronous anyway. */
+         memset(&atoms[1].pre_dep, 0, sizeof(atoms[1].pre_dep));
 
          if (PANVK_DEBUG(TRACE)) {
             panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
@@ -641,11 +639,6 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                             to_panvk_physical_device(dev->vk.physical)->kmod.dev->props.gpu_id);
          }
 
-         ret = pan_kmod_ioctl(dev->kmod.dev->fd, KBASE_IOCTL_JOB_SUBMIT, &submit);
-         if (ret) {
-            mesa_loge("kbase: KBASE_IOCTL_JOB_SUBMIT failed: %s", strerror(errno));
-            return VK_ERROR_DEVICE_LOST;
-         }
          if (g57_dbg) {
             fprintf(stderr,
                     "PANVKDBG JD submit ok vtc=%s frag=%s atoms=%u vtc_core=%x frag_core=%x\n",
@@ -654,24 +647,39 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                     frag_core);
          }
 
-         VkResult result = panvk_kbase_wait_jobs(dev, atoms, nr_atoms);
+         VkResult batch_result = VK_SUCCESS;
+         for (unsigned a = 0; a < nr_atoms && batch_result == VK_SUCCESS; a++) {
+            struct kbase_ioctl_job_submit submit1 = {
+               .addr = (uint64_t)(uintptr_t)&atoms[a],
+               .nr_atoms = 1,
+               .stride = sizeof(atoms[0]),
+            };
 
-         if (g57_dbg && result == VK_SUCCESS && batch->frag_jc.first_job) {
+            ret = pan_kmod_ioctl(dev->kmod.dev->fd, KBASE_IOCTL_JOB_SUBMIT, &submit1);
+            if (ret) {
+               mesa_loge("kbase: KBASE_IOCTL_JOB_SUBMIT failed: %s", strerror(errno));
+               return VK_ERROR_DEVICE_LOST;
+            }
+
+            batch_result = panvk_kbase_wait_jobs(dev, &atoms[a], 1);
+         }
+
+         if (g57_dbg && batch_result == VK_SUCCESS && batch->frag_jc.first_job) {
             fprintf(stderr,
                     "PANVKDBG FRAG DONE: dumping native BOs\n");
             kbase_kmod_debug_dump_native_bos(dev->kmod.dev);
          }
 
-         if (g57_dbg && result == VK_SUCCESS && batch->vtc_jc.first_job) {
+         if (g57_dbg && batch_result == VK_SUCCESS && batch->vtc_jc.first_job) {
             fprintf(stderr,
                     "PANVKDBG VTC DONE: dumping USER_BUFFER mappings\n");
             kbase_kmod_debug_dump_user_buffers(dev->kmod.dev);
          }
 
-         if (result != VK_SUCCESS) {
+         if (batch_result != VK_SUCCESS) {
             panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
             pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
-            return result;
+            return batch_result;
          }
       }
    }
