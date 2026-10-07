@@ -440,6 +440,11 @@ jobs:
           set -euo pipefail
           MESON_WORKING_DIR="$GITHUB_WORKSPACE/mesa-src"
           export PATH="$MESON_WORKING_DIR/build-host/src/compiler/clc:$MESON_WORKING_DIR/build-host/src/compiler/spirv:$MESON_WORKING_DIR/build-host/src/panfrost/clc:$PATH"
+          # RPATH=$ORIGIN (old dtags) so our bundled libdrm/libc++_shared
+          # resolve next to the .so in ANY linker namespace, not just the
+          # adrenotools one. Single quotes keep $ORIGIN literal for the
+          # linker; meson honors LDFLAGS on the link line.
+          export LDFLAGS='-Wl,--disable-new-dtags -Wl,-rpath,$ORIGIN'
 
           rm -rf build
 
@@ -466,8 +471,7 @@ jobs:
               -Dvulkan-drivers=panfrost \
               -Dllvm=disabled \
               -Dstrip=false \
-              -Dpanfrost-kmds=kbase,panthor \
-              -Dbuild_rpath='$ORIGIN'
+              -Dpanfrost-kmds=kbase,panthor
 
       - name: Verify external-include is on the compile command line
         working-directory: mesa-src
