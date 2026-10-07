@@ -466,7 +466,8 @@ jobs:
               -Dvulkan-drivers=panfrost \
               -Dllvm=disabled \
               -Dstrip=false \
-              -Dpanfrost-kmds=kbase,panthor
+              -Dpanfrost-kmds=kbase,panthor \
+              -Dbuild_rpath='$ORIGIN'
 
       - name: Verify external-include is on the compile command line
         working-directory: mesa-src
