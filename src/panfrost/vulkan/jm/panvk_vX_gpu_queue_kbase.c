@@ -753,9 +753,21 @@ panvk_per_arch(kbase_jm_submit)(struct vk_queue *vk_queue,
     * on before the next one), so the out fence needs no GPU-side
     * synchronization: arm the CPU syncs to be signalled on wait. */
    for (unsigned i = 0; i < submit->signal_count; i++) {
-      assert(submit->signals[i].signal_value == 0);
-      panvk_kbase_sync_set_pending(submit->signals[i].sync, queue,
-                                   panvk_jm_kbase_wait_done, targets);
+      if (submit->signals[i].signal_value == 0) {
+         panvk_kbase_sync_set_pending(submit->signals[i].sync, queue,
+                                      panvk_jm_kbase_wait_done, targets);
+      } else {
+         /* Timeline signal: the GPU work above already completed, so signal
+          * the point with its value now. set_pending only understands binary
+          * kbase_cpu_sync payloads; feeding it a timeline sync corrupts the
+          * timeline state and the point is never signaled, hanging every
+          * waiter forever (black screen, no error, VK_ERROR-free spin in
+          * vkWaitSemaphores). */
+         VkResult result = vk_sync_signal(&dev->vk, submit->signals[i].sync,
+                                          submit->signals[i].signal_value);
+         if (result != VK_SUCCESS)
+            return result;
+      }
    }
 
    return VK_SUCCESS;
