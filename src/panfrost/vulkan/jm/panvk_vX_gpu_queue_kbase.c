@@ -684,20 +684,32 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          }
 
          VkResult batch_result = VK_SUCCESS;
-         for (unsigned a = 0; a < nr_atoms && batch_result == VK_SUCCESS; a++) {
-            struct kbase_ioctl_job_submit submit1 = {
-               .addr = (uint64_t)(uintptr_t)&atoms[a],
-               .nr_atoms = 1,
-               .stride = sizeof(atoms[0]),
-            };
+         for (unsigned attempt = 0; ; attempt++) {
+            for (unsigned a = 0; a < nr_atoms && batch_result == VK_SUCCESS; a++) {
+               struct kbase_ioctl_job_submit submit1 = {
+                  .addr = (uint64_t)(uintptr_t)&atoms[a],
+                  .nr_atoms = 1,
+                  .stride = sizeof(atoms[0]),
+               };
 
-            ret = pan_kmod_ioctl(dev->kmod.dev->fd, KBASE_IOCTL_JOB_SUBMIT, &submit1);
-            if (ret) {
-               mesa_loge("kbase: KBASE_IOCTL_JOB_SUBMIT failed: %s", strerror(errno));
-               return VK_ERROR_DEVICE_LOST;
+               ret = pan_kmod_ioctl(dev->kmod.dev->fd, KBASE_IOCTL_JOB_SUBMIT, &submit1);
+               if (ret) {
+                  mesa_loge("kbase: KBASE_IOCTL_JOB_SUBMIT failed: %s", strerror(errno));
+                  return VK_ERROR_DEVICE_LOST;
+               }
+
+               batch_result = panvk_kbase_wait_jobs(dev, &atoms[a], 1);
             }
-
-            batch_result = panvk_kbase_wait_jobs(dev, &atoms[a], 1);
+            if (batch_result == VK_SUCCESS || attempt > 0)
+               break;
+            /* One retry with fresh atom numbers: if it succeeds the fault
+             * was transient (timing/thermal/slot lifecycle) and the session
+             * survives; if it fails identically the fault is deterministic
+             * content and the log proves it. */
+            mesa_loge("kbase: batch faulted, retrying once with fresh atoms");
+            for (unsigned a = 0; a < nr_atoms; a++)
+               atoms[a].atom_number = panvk_kbase_alloc_atom_number();
+            batch_result = VK_SUCCESS;
          }
 
          if (g57_dbg && batch_result == VK_SUCCESS && batch->frag_jc.first_job) {
