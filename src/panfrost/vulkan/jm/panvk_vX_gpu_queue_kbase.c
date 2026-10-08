@@ -198,6 +198,15 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
               batch->frag_jc.first_job ? "Y" : "N", nr_bos);
    }
 
+   /* This backend is never IO-coherent, so WB-mapped pool memory needs
+    * explicit cache maintenance before GPU access. Pool writes land via
+    * plain memcpy with no deferred sync queued, so flush every submit, not
+    * just on batch reissue: otherwise the GPU reads stale descriptors and
+    * uploads (wrong colors/textures, wild addresses -> faults). */
+   panvk_pool_flush_maps(&cmdbuf->desc_pool);
+   panvk_pool_flush_maps(&cmdbuf->varying_pool);
+   panvk_pool_flush_maps(&cmdbuf->tls_pool);
+
    if (batch->issued) {
       /* Debug-only full MALLOC_VERTEX dump before reset. */
       if (g57_dbg && batch->vtc_jc.first_job) {
