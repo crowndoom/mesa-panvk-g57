@@ -68,6 +68,25 @@ panvk_per_arch(kbase_jm_submit)(struct vk_queue *vk_queue,
  * anyway, so nothing is lost but the faults. */
 static simple_mtx_t panvk_kbase_jm_submit_lock = SIMPLE_MTX_INITIALIZER;
 
+/* Atom slot lifecycle: the kernel may still own a slot briefly after its
+ * completion event is consumed, so reusing numbers 1/2 back-to-back
+ * collided under load (both atoms faulted 0x58). Rotate through 1..255
+ * instead; event matching uses the same numbers, so nothing else changes.
+ */
+static simple_mtx_t panvk_kbase_atom_alloc_lock = SIMPLE_MTX_INITIALIZER;
+static unsigned panvk_kbase_next_atom = 1;
+
+static uint8_t
+panvk_kbase_alloc_atom_number(void)
+{
+   simple_mtx_lock(&panvk_kbase_atom_alloc_lock);
+   unsigned n = panvk_kbase_next_atom;
+   if (++panvk_kbase_next_atom > 255)
+      panvk_kbase_next_atom = 1;
+   simple_mtx_unlock(&panvk_kbase_atom_alloc_lock);
+   return (uint8_t)n;
+}
+
 /* kbase CPU syncs are resolved by the wait_many hook when someone waits on
  * them.  The JM backend submits jobs synchronously, so by the time the
  * signal is armed the GPU work is already done. */
@@ -128,6 +147,7 @@ panvk_kbase_wait_jobs(struct panvk_device *dev,
    bool pending[256] = { false };
    for (unsigned i = 0; i < count; i++)
       pending[atoms[i].atom_number] = true;
+   const unsigned nr_atoms = count;
 
    VkResult result = VK_SUCCESS;
    const int64_t deadline = os_time_get_nano() + 60000000000ll;
@@ -171,8 +191,15 @@ panvk_kbase_wait_jobs(struct panvk_device *dev,
       pending[ev.atom_number] = false;
       count--;
       if (ev.event_code != BASE_JD_EVENT_DONE) {
-         mesa_loge("kbase: atom %u failed with JD event 0x%02x",
-                   ev.atom_number, ev.event_code);
+         uint32_t core_req = 0;
+         for (unsigned i = 0; i < nr_atoms; i++) {
+            if (atoms[i].atom_number == ev.atom_number) {
+               core_req = atoms[i].core_req;
+               break;
+            }
+         }
+         mesa_loge("kbase: atom %u failed with JD event 0x%02x (core_req=0x%x)",
+                   ev.atom_number, ev.event_code, core_req);
          result = VK_ERROR_DEVICE_LOST;
       }
    }
@@ -495,7 +522,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
        * the tiler context before running the fragment atom. */
       struct base_jd_atom_v2 vatom = {
          .jc = batch->vtc_jc.first_job,
-         .atom_number = 1,
+         .atom_number = panvk_kbase_alloc_atom_number(),
          .core_req = vtc_core,
       };
       struct kbase_ioctl_job_submit vsub = {
@@ -530,7 +557,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
 
       struct base_jd_atom_v2 fatom = {
          .jc = batch->frag_jc.first_job,
-         .atom_number = 2,
+         .atom_number = panvk_kbase_alloc_atom_number(),
          .core_req = frag_core,
       };
       struct kbase_ioctl_job_submit fsub = {
@@ -583,7 +610,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
 
       if (batch->vtc_jc.first_job) {
          atoms[nr_atoms].jc = batch->vtc_jc.first_job;
-         atoms[nr_atoms].atom_number = 1;
+         atoms[nr_atoms].atom_number = panvk_kbase_alloc_atom_number();
          atoms[nr_atoms].core_req = vtc_core;
 
          if (nr_extres) {
@@ -606,7 +633,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
 
       if (batch->frag_jc.first_job) {
          atoms[nr_atoms].jc = batch->frag_jc.first_job;
-         atoms[nr_atoms].atom_number = 2;
+         atoms[nr_atoms].atom_number = panvk_kbase_alloc_atom_number();
          /* No pre_dep: ordering against the vtc atom below is enforced
           * with CPU waits at submit time (see the nr_atoms block). */
          atoms[nr_atoms].core_req = frag_core;
