@@ -1377,7 +1377,11 @@ panvk_per_arch(get_physical_device_properties)(
       .supportedQueues = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT,
    };
 
-   snprintf(properties->deviceName, sizeof(properties->deviceName), "%s",
+   /* G57 downstream: make our device unmistakable in app device lists
+    * (the stock blob reports a confusingly similar name). Keeps the
+    * "Mali" substring Wine's Helio detection matches on. */
+   snprintf(properties->deviceName, sizeof(properties->deviceName),
+            "%s (PanVK kbase)",
             (strlen(instance->drirc.debug.force_vk_devicename) > 0) ?
             instance->drirc.debug.force_vk_devicename : device->name);
 
