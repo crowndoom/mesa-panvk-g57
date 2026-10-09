@@ -30,6 +30,10 @@ uint32_t kbase_kmod_get_flush_id(const struct pan_kmod_dev *dev);
 /* True when this kbase context can allocate dma-bufs for sharing with WSI. */
 bool kbase_kmod_supports_dmabuf(const struct pan_kmod_dev *dev);
 
+/* True when the uncached dma-heap is available, so coherent (non-HOST_CACHED)
+ * allocations get CPU-uncached pages. Surfaced in the Vulkan device name. */
+bool kbase_kmod_has_uncached_heap(const struct pan_kmod_dev *dev);
+
 /* CSF queue group / queue / tiler heap primitives (CSF only).
  *
  * A queue is a ring buffer in a GPU BO: bind it to a group at a CS index,

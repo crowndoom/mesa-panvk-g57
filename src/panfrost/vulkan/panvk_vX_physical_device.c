@@ -28,6 +28,10 @@
 #include "pan_format.h"
 #include "pan_props.h"
 
+#if defined(HAVE_PAN_KMOD_KBASE)
+#include "lib/kmod/kbase_kmod.h"
+#endif
+
 /* We reserve one ubo for push constant, one for sysvals and one per-set for the
  * descriptor metadata  */
 #define RESERVED_UBO_COUNT                   6
@@ -1379,11 +1383,17 @@ panvk_per_arch(get_physical_device_properties)(
 
    /* G57 downstream: make our device unmistakable in app device lists
     * (the stock blob reports a confusingly similar name). Keeps the
-    * "Mali" substring Wine's Helio detection matches on. */
+    * "Mali" substring Wine's Helio detection matches on. The +uc/-uc flag
+    * reports whether coherent memory gets uncached pages (no log needed). */
+   const char *uc_flag = "";
+#if defined(HAVE_PAN_KMOD_KBASE)
+   uc_flag = kbase_kmod_has_uncached_heap(device->kmod.dev) ? "+uc" : "-uc";
+#endif
    snprintf(properties->deviceName, sizeof(properties->deviceName),
-            "%s (PanVK kbase)",
+            "%s (PanVK kbase%s)",
             (strlen(instance->drirc.debug.force_vk_devicename) > 0) ?
-            instance->drirc.debug.force_vk_devicename : device->name);
+            instance->drirc.debug.force_vk_devicename : device->name,
+            uc_flag);
 
    memcpy(properties->pipelineCacheUUID, device->cache_uuid, VK_UUID_SIZE);
    memcpy(properties->shaderBinaryUUID, device->cache_uuid, VK_UUID_SIZE);

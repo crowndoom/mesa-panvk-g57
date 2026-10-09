@@ -181,6 +181,15 @@ kbase_kmod_supports_dmabuf(const struct pan_kmod_dev *dev)
    return kbase_dev->dma_heap_fd >= 0;
 }
 
+bool
+kbase_kmod_has_uncached_heap(const struct pan_kmod_dev *dev)
+{
+   const struct kbase_kmod_dev *kbase_dev =
+      container_of(dev, const struct kbase_kmod_dev, base);
+
+   return kbase_dev->dma_heap_uncached_fd >= 0;
+}
+
 /* -------------------------------------------------------------------------
  * GPU properties blob parsing helpers
  * ---------------------------------------------------------------------- */
@@ -1893,21 +1902,12 @@ kbase_kmod_bo_alloc_dmabuf(struct pan_kmod_dev *dev, uint64_t size,
    const uint64_t page_size = 4096;
 
    /* Cached heap only for HOST_CACHED (WB_MMAP) memory, which the app
-    * flushes explicitly. Everything else must be CPU-uncached so coherent
-    * writes are visible to the GPU without any flush. */
-   int heap_fd = kbase_dev->dma_heap_fd;
-   if (!(kmod_flags & PAN_KMOD_BO_FLAG_WB_MMAP)) {
-      if (kbase_dev->dma_heap_uncached_fd >= 0) {
-         heap_fd = kbase_dev->dma_heap_uncached_fd;
-      } else {
-         static bool warned_no_uncached_heap = false;
-         if (!warned_no_uncached_heap) {
-            warned_no_uncached_heap = true;
-            mesa_loge("kbase: no uncached dma-heap; coherent memory stays "
-                      "cached and may read stale");
-         }
-      }
-   }
+    * flushes explicitly. Everything else uses the uncached heap so coherent
+    * writes are visible to the GPU without any flush (the alloc gate above
+    * already guarantees it exists here). */
+   int heap_fd = (kmod_flags & PAN_KMOD_BO_FLAG_WB_MMAP)
+                    ? kbase_dev->dma_heap_fd
+                    : kbase_dev->dma_heap_uncached_fd;
 
    struct dma_heap_allocation_data alloc = {
       .len = ALIGN_POT(size, page_size),
@@ -1936,7 +1936,9 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev,
    if (!exclusive_vm && kbase_dev->dma_heap_fd >= 0 &&
        !(kmod_flags & (PAN_KMOD_BO_FLAG_EXECUTABLE |
                        PAN_KMOD_BO_FLAG_ALLOC_ON_FAULT |
-                       PAN_KMOD_BO_FLAG_CSF_EVENT)))
+                       PAN_KMOD_BO_FLAG_CSF_EVENT)) &&
+       ((kmod_flags & PAN_KMOD_BO_FLAG_WB_MMAP) ||
+        kbase_dev->dma_heap_uncached_fd >= 0))
       return kbase_kmod_bo_alloc_dmabuf(dev, size, kmod_flags);
 
    const uint64_t page_size = 4096;
