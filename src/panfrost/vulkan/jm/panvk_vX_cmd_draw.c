@@ -43,6 +43,21 @@
 
 #include <stdlib.h>
 
+/* G57 triage knob: PANVK_FLIP_FACING=1 inverts the front-face bit in both
+ * DCD paths. If black faces SWAP to the opposite pair, facing is inverted
+ * for DXVK-style negative-height viewports and the fix is to make facing
+ * viewport-sign-aware. If nothing changes, facing is innocent. */
+static bool
+panvk_flip_facing(void)
+{
+   static int v = -1;
+   if (v < 0) {
+      const char *e = getenv("PANVK_FLIP_FACING");
+      v = e && e[0] == '1';
+   }
+   return v;
+}
+
 static bool
 has_depth_att(struct panvk_cmd_buffer *cmdbuf)
 {
@@ -968,21 +983,6 @@ panvk_emit_tiler_primitive_size(struct panvk_cmd_buffer *cmdbuf,
          cfg.fixed_sized = draw->line_width;
       }
    }
-}
-
-/* G57 triage knob: PANVK_FLIP_FACING=1 inverts the front-face bit in both
- * DCD paths. If black faces SWAP to the opposite pair, facing is inverted
- * for DXVK-style negative-height viewports and the fix is to make facing
- * viewport-sign-aware. If nothing changes, facing is innocent. */
-static bool
-panvk_flip_facing(void)
-{
-   static int v = -1;
-   if (v < 0) {
-      const char *e = getenv("PANVK_FLIP_FACING");
-      v = e && e[0] == '1';
-   }
-   return v;
 }
 
 static void
