@@ -108,6 +108,11 @@ struct kbase_kmod_dev {
    /* Android dma-heap used for BOs which need to be shared with WSI. */
    int dma_heap_fd;
 
+   /* Uncached dma-heap for non-HOST_CACHED allocations. Coherent VkMemory
+    * is never flushed by the app, so its CPU mapping must not be cached;
+    * otherwise GPU reads go stale (black attributes, wild indexes). */
+   int dma_heap_uncached_fd;
+
    /* Set when the CSF notification stream reports a queue-group error.
     * Vulkan queue status queries use this latch instead of invalidating and
     * reading every GPU subqueue context on every submission. */
@@ -1253,6 +1258,7 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
    kbase_dev->tracking_page = tracking_page;
    kbase_dev->next_handle = 1;
    kbase_dev->dma_heap_fd = -1;
+   kbase_dev->dma_heap_uncached_fd = -1;
    kbase_dev->kcpu.fence_fd = -1;
    simple_mtx_init(&kbase_dev->kcpu.lock, mtx_plain);
 
@@ -1293,10 +1299,21 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
       mesa_logd("kbase: dma-heap unavailable at %s: %s", dma_heap,
                 strerror(errno));
 
+   const char *dma_heap_uncached = getenv("PANVK_KBASE_DMA_HEAP_UNCACHED");
+   if (!dma_heap_uncached || !dma_heap_uncached[0])
+      dma_heap_uncached = "/dev/dma_heap/system-uncached";
+
+   kbase_dev->dma_heap_uncached_fd = open(dma_heap_uncached, O_RDWR | O_CLOEXEC);
+   if (kbase_dev->dma_heap_uncached_fd < 0)
+      mesa_logd("kbase: uncached dma-heap unavailable at %s: %s",
+                dma_heap_uncached, strerror(errno));
+
    if (!kbase_dev->base.props.gpu_id) {
       mesa_loge("kbase: failed to determine GPU ID from properties");
       if (kbase_dev->dma_heap_fd >= 0)
          close(kbase_dev->dma_heap_fd);
+      if (kbase_dev->dma_heap_uncached_fd >= 0)
+         close(kbase_dev->dma_heap_uncached_fd);
       munmap(tracking_page, 4096);
       /* On failure the caller keeps ownership of the fd (it closes it on
        * NULL return), so don't let pan_kmod_dev_cleanup() close it too. */
@@ -1357,6 +1374,8 @@ kbase_kmod_dev_destroy(struct pan_kmod_dev *dev)
 
    if (kbase_dev->dma_heap_fd >= 0)
       close(kbase_dev->dma_heap_fd);
+   if (kbase_dev->dma_heap_uncached_fd >= 0)
+      close(kbase_dev->dma_heap_uncached_fd);
 
    pan_kmod_dev_cleanup(dev);
    pan_kmod_free(dev->allocator, kbase_dev);
@@ -1767,8 +1786,13 @@ kbase_kmod_import_dmabuf(struct pan_kmod_dev *dev,
    uint64_t import_flags =
       BASE_MEM_PROT_CPU_RD | BASE_MEM_PROT_CPU_WR |
       BASE_MEM_PROT_GPU_RD | BASE_MEM_PROT_GPU_WR |
-      BASE_MEM_CACHED_CPU |
       BASE_MEM_IMPORT_SHARED | BASE_MEM_COHERENT_SYSTEM;
+
+   /* CACHED_CPU only when the pages are actually CPU-cached: our own
+    * allocations from the cached heap (WB_MMAP), or external imports whose
+    * exporter cacheability is unknown (keep the old behavior for WSI). */
+   if ((kmod_flags & PAN_KMOD_BO_FLAG_WB_MMAP) || external_import)
+      import_flags |= BASE_MEM_CACHED_CPU;
 
    if (kmod_flags & PAN_KMOD_BO_FLAG_GPU_UNCACHED)
       import_flags |= BASE_MEM_UNCACHED_GPU;
@@ -1867,12 +1891,30 @@ kbase_kmod_bo_alloc_dmabuf(struct pan_kmod_dev *dev, uint64_t size,
    struct kbase_kmod_dev *kbase_dev =
       container_of(dev, struct kbase_kmod_dev, base);
    const uint64_t page_size = 4096;
+
+   /* Cached heap only for HOST_CACHED (WB_MMAP) memory, which the app
+    * flushes explicitly. Everything else must be CPU-uncached so coherent
+    * writes are visible to the GPU without any flush. */
+   int heap_fd = kbase_dev->dma_heap_fd;
+   if (!(kmod_flags & PAN_KMOD_BO_FLAG_WB_MMAP)) {
+      if (kbase_dev->dma_heap_uncached_fd >= 0) {
+         heap_fd = kbase_dev->dma_heap_uncached_fd;
+      } else {
+         static bool warned_no_uncached_heap = false;
+         if (!warned_no_uncached_heap) {
+            warned_no_uncached_heap = true;
+            mesa_loge("kbase: no uncached dma-heap; coherent memory stays "
+                      "cached and may read stale");
+         }
+      }
+   }
+
    struct dma_heap_allocation_data alloc = {
       .len = ALIGN_POT(size, page_size),
       .fd_flags = O_RDWR | O_CLOEXEC,
    };
 
-   if (ioctl(kbase_dev->dma_heap_fd, DMA_HEAP_IOCTL_ALLOC, &alloc)) {
+   if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &alloc)) {
       mesa_loge("kbase: DMA_HEAP_IOCTL_ALLOC failed: %s", strerror(errno));
       return NULL;
    }
