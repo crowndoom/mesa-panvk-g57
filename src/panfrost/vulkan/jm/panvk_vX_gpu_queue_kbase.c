@@ -140,9 +140,41 @@ struct base_jd_atom_v2 {
    uint8_t payload[16]; /* padding to 64 bytes */
 } __attribute__((packed, aligned(16)));
 
+/* Fault triage: a 0x58 names the atom but not the job or pointer. Dump the
+ * faulted chain compactly and unconditionally (only on fault): per job the
+ * type number plus header and Draw.Vertex words, where NULL GPU addresses
+ * show up directly. Capped so a huge batch can't flood the log. */
+static void
+panvk_kbase_dump_fault(struct panvk_device *dev, struct panvk_batch *batch,
+                       uint64_t fault_jc)
+{
+   mesa_loge("kbaseFAULT chain=%s jobs=%u tiler_heap=%llx heap_desc=%llx ctx=%llx",
+             fault_jc == batch->vtc_jc.first_job ? "vtc" : "frag",
+             (unsigned)(batch->jobs.size / sizeof(void *)),
+             (unsigned long long)(dev->tiler_heap ?
+                                  dev->tiler_heap->addr.dev : 0),
+             (unsigned long long)batch->tiler.heap_desc.gpu,
+             (unsigned long long)(batch->tiler.ctx_descs.gpu));
+
+   unsigned n = 0;
+   util_dynarray_foreach(&batch->jobs, void *, job) {
+      if (n >= 24) {
+         mesa_loge("kbaseFAULT ... truncated");
+         break;
+      }
+      const uint32_t *w = (const uint32_t *)(*job);
+      mesa_loge("kbaseFAULT job=%u type=%u "
+                "%08x %08x %08x %08x %08x %08x %08x %08x "
+                "%08x %08x %08x %08x %08x %08x %08x %08x",
+                n++, (w[4] >> 1) & 0x7f,
+                w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7],
+                w[32], w[33], w[34], w[35], w[36], w[37], w[38], w[39]);
+   }
+}
+
 static VkResult
 panvk_kbase_wait_jobs(struct panvk_device *dev,
-                     const struct base_jd_atom_v2 *atoms, unsigned count)
+                      const struct base_jd_atom_v2 *atoms, unsigned count)
 {
    bool pending[256] = { false };
    for (unsigned i = 0; i < count; i++)
@@ -684,6 +716,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          }
 
          VkResult batch_result = VK_SUCCESS;
+         unsigned faulted = 0;
          for (unsigned attempt = 0; ; attempt++) {
             for (unsigned a = 0; a < nr_atoms && batch_result == VK_SUCCESS; a++) {
                struct kbase_ioctl_job_submit submit1 = {
@@ -699,6 +732,8 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                }
 
                batch_result = panvk_kbase_wait_jobs(dev, &atoms[a], 1);
+               if (batch_result != VK_SUCCESS)
+                  faulted = a;
             }
             if (batch_result == VK_SUCCESS || attempt > 0)
                break;
@@ -727,6 +762,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          if (batch_result != VK_SUCCESS) {
             panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
             pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
+            panvk_kbase_dump_fault(dev, batch, atoms[faulted].jc);
             return batch_result;
          }
       }
