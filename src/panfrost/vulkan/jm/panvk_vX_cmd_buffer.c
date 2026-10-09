@@ -355,6 +355,7 @@ panvk_per_arch(cmd_prepare_tiler_context)(struct panvk_cmd_buffer *cmdbuf,
    tiler_desc =
       batch->tiler.ctx_descs.gpu + (pan_size(TILER_CONTEXT) * layer_idx);
 
+   memset(&batch->tiler.heap_templ, 0, sizeof(batch->tiler.heap_templ));
    pan_pack(&batch->tiler.heap_templ, TILER_HEAP, cfg) {
       cfg.size = pan_kmod_bo_size(dev->tiler_heap->bo);
       cfg.base = dev->tiler_heap->addr.dev;
@@ -362,6 +363,7 @@ panvk_per_arch(cmd_prepare_tiler_context)(struct panvk_cmd_buffer *cmdbuf,
       cfg.top = cfg.base + cfg.size;
    }
 
+   memset(&batch->tiler.ctx_templ, 0, sizeof(batch->tiler.ctx_templ));
    pan_pack(&batch->tiler.ctx_templ, TILER_CONTEXT, cfg) {
       cfg.hierarchy_mask = panvk_select_tiler_hierarchy_mask(
          phys_dev, &cmdbuf->state.gfx, pan_kmod_bo_size(dev->tiler_heap->bo));
