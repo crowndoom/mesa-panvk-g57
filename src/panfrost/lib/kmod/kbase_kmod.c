@@ -190,6 +190,22 @@ kbase_kmod_has_uncached_heap(const struct pan_kmod_dev *dev)
    return kbase_dev->dma_heap_uncached_fd >= 0;
 }
 
+/* Triage knob: PANVK_NO_DMABUF=1 routes all ordinary allocations through
+ * kbase MEM_ALLOC (fully committed, PTEs populated at alloc time) instead
+ * of the dma-heap import path (VA reserved, pages resolved on demand).
+ * If flaky 0x58s and zero-filled reads disappear with it, the dma-buf
+ * demand path is guilty. */
+static bool
+kbase_no_dmabuf(void)
+{
+   static int v = -1;
+   if (v < 0) {
+      const char *e = getenv("PANVK_NO_DMABUF");
+      v = e && e[0] == '1';
+   }
+   return v;
+}
+
 /* -------------------------------------------------------------------------
  * GPU properties blob parsing helpers
  * ---------------------------------------------------------------------- */
@@ -1938,7 +1954,8 @@ kbase_kmod_bo_alloc(struct pan_kmod_dev *dev,
                        PAN_KMOD_BO_FLAG_ALLOC_ON_FAULT |
                        PAN_KMOD_BO_FLAG_CSF_EVENT)) &&
        ((kmod_flags & PAN_KMOD_BO_FLAG_WB_MMAP) ||
-        kbase_dev->dma_heap_uncached_fd >= 0))
+        kbase_dev->dma_heap_uncached_fd >= 0) &&
+       !kbase_no_dmabuf())
       return kbase_kmod_bo_alloc_dmabuf(dev, size, kmod_flags);
 
    const uint64_t page_size = 4096;
