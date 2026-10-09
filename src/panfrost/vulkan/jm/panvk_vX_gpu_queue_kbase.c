@@ -550,8 +550,10 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
    /* A draw chain starts with a MALLOC_VERTEX (Valhall IDVS) job, which
     * needs both the shader cores and the tiler: submitting it with only
     * BASE_JD_REQ_T makes the job fail with JOB_AFFINITY_FAULT (0x44).
-    * Compute/NULL chains stay on the vertex/compute slot. */
-   uint32_t vtc_core = BASE_JD_REQ_CS | BASE_JD_REQ_T;
+    * Compute/NULL chains stay on the vertex/compute slot. The V bit matches
+    * the legacy helper and FristOneRR (CS|T|V); without it vertex chains
+    * fault intermittently (0x58) under scheduling pressure. */
+   uint32_t vtc_core = BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V;
    uint32_t frag_core = BASE_JD_REQ_FS;
    if (batch->vtc_jc.first_job) {
       /* Pick the job slot from the first job in the chain: compute (and
