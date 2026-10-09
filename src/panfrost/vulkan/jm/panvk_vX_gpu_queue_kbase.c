@@ -163,12 +163,35 @@ panvk_kbase_dump_fault(struct panvk_device *dev, struct panvk_batch *batch,
          break;
       }
       const uint32_t *w = (const uint32_t *)(*job);
-      mesa_loge("kbaseFAULT job=%u type=%u "
-                "%08x %08x %08x %08x %08x %08x %08x %08x "
+      unsigned type = (w[4] >> 1) & 0x7f;
+      /* MALLOC_VERTEX descriptors are 384 bytes (96 words); everything
+       * else on this path fits in 32 words. Pool slabs are kilobytes, so
+       * these bounded reads stay mapped. */
+      unsigned words = (type == 11) ? 96 : 32;
+      mesa_loge("kbaseFAULT job=%u type=%u words=%u", n++, type, words);
+      for (unsigned base = 0; base < words; base += 16) {
+         mesa_loge("kbaseFAULT w%02u "
+                   "%08x %08x %08x %08x %08x %08x %08x %08x "
+                   "%08x %08x %08x %08x %08x %08x %08x %08x",
+                   base,
+                   w[base + 0], w[base + 1], w[base + 2], w[base + 3],
+                   w[base + 4], w[base + 5], w[base + 6], w[base + 7],
+                   w[base + 8], w[base + 9], w[base + 10], w[base + 11],
+                   w[base + 12], w[base + 13], w[base + 14], w[base + 15]);
+      }
+   }
+
+   if (batch->tiler.ctx_descs.cpu && batch->tiler.heap_desc.cpu) {
+      const uint32_t *tc = (const uint32_t *)batch->tiler.ctx_descs.cpu;
+      const uint32_t *hd = (const uint32_t *)batch->tiler.heap_desc.cpu;
+      mesa_loge("kbaseFAULT tc %08x %08x %08x %08x %08x %08x %08x %08x "
                 "%08x %08x %08x %08x %08x %08x %08x %08x",
-                n++, (w[4] >> 1) & 0x7f,
-                w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7],
-                w[32], w[33], w[34], w[35], w[36], w[37], w[38], w[39]);
+                tc[0], tc[1], tc[2], tc[3], tc[4], tc[5], tc[6], tc[7],
+                tc[8], tc[9], tc[10], tc[11], tc[12], tc[13], tc[14], tc[15]);
+      mesa_loge("kbaseFAULT hd %08x %08x %08x %08x %08x %08x %08x %08x "
+                "%08x %08x %08x %08x %08x %08x %08x %08x",
+                hd[0], hd[1], hd[2], hd[3], hd[4], hd[5], hd[6], hd[7],
+                hd[8], hd[9], hd[10], hd[11], hd[12], hd[13], hd[14], hd[15]);
    }
 }
 
