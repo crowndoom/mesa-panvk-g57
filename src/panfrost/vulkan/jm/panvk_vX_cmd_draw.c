@@ -970,6 +970,21 @@ panvk_emit_tiler_primitive_size(struct panvk_cmd_buffer *cmdbuf,
    }
 }
 
+/* G57 triage knob: PANVK_FLIP_FACING=1 inverts the front-face bit in both
+ * DCD paths. If black faces SWAP to the opposite pair, facing is inverted
+ * for DXVK-style negative-height viewports and the fix is to make facing
+ * viewport-sign-aware. If nothing changes, facing is innocent. */
+static bool
+panvk_flip_facing(void)
+{
+   static int v = -1;
+   if (v < 0) {
+      const char *e = getenv("PANVK_FLIP_FACING");
+      v = e && e[0] == '1';
+   }
+   return v;
+}
+
 static void
 panvk_emit_tiler_dcd(struct panvk_cmd_buffer *cmdbuf,
                      const struct panvk_draw_data *draw,
@@ -983,7 +998,8 @@ panvk_emit_tiler_dcd(struct panvk_cmd_buffer *cmdbuf,
    const bool non_polygon = reduced_prim != MESA_PRIM_TRIANGLES;
 
    pan_pack(dcd, DRAW, cfg) {
-      cfg.front_face_ccw = rs->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      cfg.front_face_ccw =
+         (rs->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE) != panvk_flip_facing();
       cfg.cull_front_face =
          !non_polygon && (rs->cull_mode & VK_CULL_MODE_FRONT_BIT) != 0;
       cfg.cull_back_face =
@@ -2205,7 +2221,8 @@ panvk_v9_build_dcd_flags(struct panvk_cmd_buffer *cmdbuf,
       if (rs->line.mode == VK_LINE_RASTERIZATION_MODE_BRESENHAM)
          cfg.aligned_line_ends = true;
 
-      cfg.front_face_ccw = rs->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      cfg.front_face_ccw =
+         (rs->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE) != panvk_flip_facing();
 
       /*
        * Vulkan face culling is polygon-facing state.  Points and lines do
