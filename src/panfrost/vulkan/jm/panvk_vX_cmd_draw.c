@@ -596,6 +596,8 @@ panvk_draw_emit_attrib(const struct panvk_draw_data *draw,
    enum pipe_format f = vk_format_to_pipe_format(attrib_info->format);
    unsigned buf_idx = attrib_info->binding;
 
+   memset(desc, 0, sizeof(*desc));
+
    pan_pack(desc, ATTRIBUTE, cfg) {
       cfg.buffer_index = buf_idx * 2;
       cfg.offset_enable = true;
