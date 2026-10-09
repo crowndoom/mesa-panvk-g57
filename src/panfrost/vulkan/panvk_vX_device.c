@@ -10,6 +10,9 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "drm-uapi/panthor_drm.h"
 
 #include "vk_cmd_enqueue_entrypoints.h"
@@ -596,10 +599,19 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
 #endif
 
 #if PAN_ARCH <= 9
-   result = panvk_priv_bo_create(
-      device, 128 * 1024 * 1024,
-      PAN_KMOD_BO_FLAG_ALLOC_ON_FAULT,
-      VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &device->tiler_heap);
+   /* Grow-on-fault: only touched pages are backed, so 512 MB is virtual.
+    * Dense scenes (DXVK foliage, G-buffers) OOM a 128 MB heap; the env var
+    * overrides in both directions for triage. */
+   {
+      uint64_t tiler_heap_mb = 512;
+      const char *e = getenv("PANVK_TILER_HEAP_MB");
+      if (e && atoi(e) >= 16 && atoi(e) <= 2048)
+         tiler_heap_mb = (uint64_t)atoi(e);
+      result = panvk_priv_bo_create(
+         device, tiler_heap_mb * 1024 * 1024,
+         PAN_KMOD_BO_FLAG_ALLOC_ON_FAULT,
+         VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &device->tiler_heap);
+   }
    if (result != VK_SUCCESS)
       goto err_free_priv_bos;
 
