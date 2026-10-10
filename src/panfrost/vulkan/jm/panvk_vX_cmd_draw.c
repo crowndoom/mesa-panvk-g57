@@ -2568,6 +2568,24 @@ panvk_v9_draw(struct panvk_cmd_buffer *cmdbuf, struct panvk_draw_info *info)
                   (unsigned long long)cmdbuf->state.gfx.vs.push_uniforms,
                   vs->fau.total_count);
        }
+
+       /* Compact per-draw trace (PANVK_DRAWTRACE=1): one line per draw with
+        * the identities that must change per draw (push-uniform blocks hold
+        * per-draw sysvals like firstVertex) versus the ones that identify
+        * the pipeline (shader variants). Reused push blocks across draws
+        * that need distinct sysvals show up directly. */
+       if (getenv("PANVK_DRAWTRACE")) {
+          fprintf(stderr,
+                  "drawtrace batch=%p job=%llx lay=%u vb=%d vc=%u isz=%u prim=%d "
+                  "vs=%p fs=%p vpush=%llx fpush=%llx tiler=%llx\n",
+                  (void *)batch, (unsigned long long)job.gpu, layer,
+                  info->vertex.base, info->vertex.count,
+                  (unsigned)info->index.index_size, (int)info->prim,
+                  (const void *)vs, (const void *)fs,
+                  (unsigned long long)cmdbuf->state.gfx.vs.push_uniforms,
+                  (unsigned long long)(fs ? cmdbuf->state.gfx.fs.push_uniforms : 0),
+                  (unsigned long long)batch->tiler.ctx.valhall.desc);
+       }
    }
 
    clear_dirty_after_draw(cmdbuf);
