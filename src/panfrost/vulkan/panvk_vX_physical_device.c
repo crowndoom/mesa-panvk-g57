@@ -10,6 +10,7 @@
  */
 
 #include <sys/sysmacros.h>
+#include <stdlib.h>
 
 #include "git_sha1.h"
 
@@ -322,6 +323,20 @@ has_texture_compression_bc(const struct panvk_physical_device *physical_device)
       BITFIELD_BIT(MALI_BC6H_UF16) | BITFIELD_BIT(MALI_BC7_UNORM));
 }
 
+/* Triage knob: PANVK_NO_TIMELINE=1 hides timeline semaphores (DXVK falls
+ * back to binary-only, like under the wrapper). If flaky 0x58s disappear,
+ * the timeline/wait path is guilty. */
+static bool
+panvk_no_timeline(void)
+{
+   static int v = -1;
+   if (v < 0) {
+      const char *e = getenv("PANVK_NO_TIMELINE");
+      v = e && e[0] == '1';
+   }
+   return v;
+}
+
 void
 panvk_per_arch(get_physical_device_features)(
    const struct panvk_instance *instance,
@@ -459,7 +474,7 @@ panvk_per_arch(get_physical_device_features)(
       .shaderSubgroupExtendedTypes = true,
       .separateDepthStencilLayouts = true,
       .hostQueryReset = true,
-      .timelineSemaphore = true,
+      .timelineSemaphore = !panvk_no_timeline(),
       .bufferDeviceAddress = true,
       /* only expose for CSF/panthor, and if we have extended VA ranges */
       .bufferDeviceAddressCaptureReplay =
