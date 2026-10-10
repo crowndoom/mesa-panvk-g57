@@ -38,6 +38,7 @@
 #include "pan_shader.h"
 
 #include "vk_format.h"
+#include "vk_log.h"
 #include "vk_meta.h"
 #include "vk_pipeline_layout.h"
 
@@ -720,6 +721,40 @@ panvk_draw_prepare_vs_attribs(struct panvk_cmd_buffer *cmdbuf,
 
    cmdbuf->state.gfx.vs.attrib_bufs = bufs.gpu;
    cmdbuf->state.gfx.vs.attribs = attribs.gpu;
+
+   /* One-time table dump (PANVK_DUMPTABLES=N): first N rebuilt attribute
+    * tables with formats/strides/offsets/sizes. Shows zero formats, short
+    * buffers, or missing bindings directly. Tiny output, then silent. */
+   {
+      static unsigned dumped = 0;
+      static int want = -1;
+      if (want < 0) {
+         const char *e = getenv("PANVK_DUMPTABLES");
+         want = e ? atoi(e) : 0;
+         if (want < 0)
+            want = 0;
+      }
+      if (dumped < (unsigned)want) {
+         dumped++;
+         mesa_loge("tables #%u vbs=%u attribs=%u bufs=%llx att=%llx",
+                   dumped, num_vbs, num_vs_attribs,
+                   (unsigned long long)bufs.gpu,
+                   (unsigned long long)attribs.gpu);
+         for (unsigned i = 0; i < num_vbs; i++) {
+            mesa_loge("tables #%u bind%u stride=%u addr=%llx size=%llu rate=%d",
+                      dumped, i, dyns->vi_binding_strides[i],
+                      (unsigned long long)cmdbuf->state.gfx.vb.bufs[i].address,
+                      (unsigned long long)cmdbuf->state.gfx.vb.bufs[i].size,
+                      (int)vi->bindings[i].input_rate);
+         }
+         for (unsigned i = 0; i < num_vs_attribs; i++) {
+            mesa_loge("tables #%u attr%u bind=%u fmt=%d off=%u", dumped, i,
+                      vi->attributes[i].binding,
+                      (int)vi->attributes[i].format,
+                      (unsigned)vi->attributes[i].offset);
+         }
+      }
+   }
 
    if (num_imgs) {
       cmdbuf->state.gfx.vs.desc.img_attrib_table =
