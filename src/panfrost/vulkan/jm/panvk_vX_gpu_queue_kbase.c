@@ -218,6 +218,32 @@ panvk_submit_gap(void)
       usleep((useconds_t)gap_us);
 }
 
+static unsigned
+panvk_fault_backoff_us(void)
+{
+   static int v = -1;
+   if (v < 0) {
+      const char *e = getenv("PANVK_FAULT_BACKOFF_US");
+      v = e ? atoi(e) : 20000;
+      if (v < 0)
+         v = 0;
+   }
+   return (unsigned)v;
+}
+
+static unsigned
+panvk_fault_max_recover(void)
+{
+   static int v = -1;
+   if (v < 0) {
+      const char *e = getenv("PANVK_FAULT_MAX_RECOVER");
+      v = e ? atoi(e) : 8;
+      if (v < 1)
+         v = 1;
+   }
+   return (unsigned)v;
+}
+
 static VkResult
 panvk_kbase_wait_jobs(struct panvk_device *dev,
                       const struct base_jd_atom_v2 *atoms, unsigned count)
@@ -765,6 +791,7 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
 
          VkResult batch_result = VK_SUCCESS;
          unsigned faulted = 0;
+         static unsigned consec_faults = 0;
          for (unsigned attempt = 0; ; attempt++) {
             for (unsigned a = 0; a < nr_atoms && batch_result == VK_SUCCESS; a++) {
                struct kbase_ioctl_job_submit submit1 = {
@@ -787,15 +814,30 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
             }
             if (batch_result == VK_SUCCESS || attempt > 0)
                break;
-            /* One retry with fresh atom numbers: if it succeeds the fault
-             * was transient (timing/thermal/slot lifecycle) and the session
-             * survives; if it fails identically the fault is deterministic
-             * content and the log proves it. */
-            mesa_loge("kbase: batch faulted, retrying once with fresh atoms");
+            /* Fault recovery with backoff: an instant reissue faults
+             * identically (whatever the kernel is still tearing down isn't
+             * done milliseconds later either), so sleep first, then reissue
+             * once with fresh atom numbers. A consecutive-fault cap keeps a
+             * chronically faulting batch from slideshowing forever. */
+            unsigned backoff_us = panvk_fault_backoff_us();
+            unsigned max_recover = panvk_fault_max_recover();
+            if (++consec_faults > max_recover) {
+               mesa_loge("kbase: %u consecutive batch faults, giving up",
+                         consec_faults);
+               break;
+            }
+            mesa_loge("kbase: batch faulted, backing off %u us then retrying "
+                      "with fresh atoms (consec %u)",
+                      backoff_us, consec_faults);
+            if (backoff_us > 0)
+               usleep((useconds_t)backoff_us);
             for (unsigned a = 0; a < nr_atoms; a++)
                atoms[a].atom_number = panvk_kbase_alloc_atom_number();
             batch_result = VK_SUCCESS;
          }
+
+         if (batch_result == VK_SUCCESS)
+            consec_faults = 0;
 
          if (g57_dbg && batch_result == VK_SUCCESS && batch->frag_jc.first_job) {
             fprintf(stderr,
