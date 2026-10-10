@@ -201,6 +201,23 @@ panvk_kbase_dump_fault(struct panvk_device *dev, struct panvk_batch *batch,
    }
 }
 
+/* Triage knob: PANVK_SUBMIT_GAP_US=N sleeps N microseconds after every
+ * successful atom wait. If flaky 0x58s move/vanish with bigger gaps, our
+ * back-to-back submits are racing kernel-side slot teardown. */
+static void
+panvk_submit_gap(void)
+{
+   static int gap_us = -1;
+   if (gap_us < 0) {
+      const char *e = getenv("PANVK_SUBMIT_GAP_US");
+      gap_us = e ? atoi(e) : 0;
+      if (gap_us < 0)
+         gap_us = 0;
+   }
+   if (gap_us > 0)
+      usleep((useconds_t)gap_us);
+}
+
 static VkResult
 panvk_kbase_wait_jobs(struct panvk_device *dev,
                       const struct base_jd_atom_v2 *atoms, unsigned count)
@@ -765,6 +782,8 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
                batch_result = panvk_kbase_wait_jobs(dev, &atoms[a], 1);
                if (batch_result != VK_SUCCESS)
                   faulted = a;
+               else
+                  panvk_submit_gap();
             }
             if (batch_result == VK_SUCCESS || attempt > 0)
                break;
