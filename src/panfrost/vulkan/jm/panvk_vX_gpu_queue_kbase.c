@@ -51,6 +51,12 @@ panvk_g57_debug_enabled(void)
    return getenv("PANVK_G57_DEBUG") != NULL;
 }
 
+static inline bool
+panvk_drop_waits(void)
+{
+   return getenv("PANVK_DROP_WAITS") != NULL;
+}
+
 /* Implemented here; the only caller (the kbase path of gpu_queue_submit in
  * panvk_vX_gpu_queue.c) prototypes it as panvk_per_arch(kbase_jm_submit). */
 VkResult
@@ -851,8 +857,11 @@ panvk_per_arch(kbase_jm_submit)(struct vk_queue *vk_queue,
    }
 
    /* On kbase there are no DRM syncobjs: resolve incoming semaphore waits on
-    * the CPU before emitting the jobs. */
-   if (submit->wait_count) {
+    * the CPU before emitting the jobs. Triage knob PANVK_DROP_WAITS=1 skips
+    * waits entirely (mirrors the wrapper, which drops up to 8 wait
+    * semaphores per submit); safe for triage because the single JM queue
+    * runs strictly in order behind the global submit lock. */
+   if (submit->wait_count && !panvk_drop_waits()) {
       VkResult result = vk_sync_wait_many(&dev->vk, submit->wait_count,
                                           submit->waits, VK_SYNC_WAIT_COMPLETE,
                                           UINT64_MAX);
