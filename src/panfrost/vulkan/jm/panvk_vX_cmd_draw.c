@@ -653,6 +653,19 @@ panvk_draw_prepare_vs_attribs(struct panvk_cmd_buffer *cmdbuf,
       gfx_state_dirty(cmdbuf, VB) || gfx_state_dirty(cmdbuf, DESC_STATE) ||
       is_indirect_draw(draw) != cmdbuf->state.gfx.vs.previous_draw_was_indirect;
 
+   /* One-time ping, unconditional: proves draws reach this function and
+    * shows the flag value as the driver sees it, so a silent tables dump
+    * is attributable (flag off vs never-dirty vs never-called). */
+   {
+      static bool pinged = false;
+      if (!pinged) {
+         pinged = true;
+         const char *e = getenv("PANVK_DUMPTABLES");
+         mesa_loge("ping vs_attribs: alive dirty=%d num_vs_attribs=%u dumptables=%s",
+                   (int)dirty, num_vs_attribs, e ? e : "(unset)");
+      }
+   }
+
    if (!dirty)
       return VK_SUCCESS;
 
