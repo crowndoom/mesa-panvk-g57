@@ -839,6 +839,40 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          if (batch_result == VK_SUCCESS)
             consec_faults = 0;
 
+         /* Post-success job dump (PANVK_DUMPOK=N): header words of the
+          * first job after successful execution. Settles whether w2/w3
+          * (fault-pointer field) is kernel-written on success too
+          * (bookkeeping echo, making it useless for fault attribution)
+          * or only on fault. Invalidate first so CPU reads are fresh. */
+         {
+            static unsigned okdumped = 0;
+            static int okwant = -1;
+            if (okwant < 0) {
+               const char *e = getenv("PANVK_DUMPOK");
+               okwant = e ? atoi(e) : 0;
+               if (okwant < 0)
+                  okwant = 0;
+            }
+            if (batch_result == VK_SUCCESS && okdumped < (unsigned)okwant) {
+               void *first = NULL;
+               util_dynarray_foreach(&batch->jobs, void *, job) {
+                  first = *job;
+                  break;
+               }
+               if (first) {
+                  okdumped++;
+                  panvk_pool_invalidate_maps(&cmdbuf->desc_pool);
+                  pan_kmod_flush_bo_map_syncs(dev->kmod.dev);
+                  const uint32_t *w = (const uint32_t *)first;
+                  mesa_loge("kbaseOK job type=%u "
+                            "%08x %08x %08x %08x %08x %08x %08x %08x",
+                            (w[4] >> 1) & 0x7f,
+                            w[0], w[1], w[2], w[3],
+                            w[4], w[5], w[6], w[7]);
+               }
+            }
+         }
+
          if (g57_dbg && batch_result == VK_SUCCESS && batch->frag_jc.first_job) {
             fprintf(stderr,
                     "PANVKDBG FRAG DONE: dumping native BOs\n");
