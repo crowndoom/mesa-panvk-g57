@@ -204,6 +204,21 @@ panvk_kbase_dump_fault(struct panvk_device *dev, struct panvk_batch *batch,
 /* Triage knob: PANVK_SUBMIT_GAP_US=N sleeps N microseconds after every
  * successful atom wait. If flaky 0x58s move/vanish with bigger gaps, our
  * back-to-back submits are racing kernel-side slot teardown. */
+/* Triage knob: PANVK_CHAIN=1 submits the batch's atoms back-to-back with
+ * GPU-side ORDER pre_deps (vtc before frag) and waits afterwards, instead
+ * of submit+CPU-wait per atom. Mirrors FristOneRR's shape; tests whether
+ * the fault is an artifact of synchronous pacing. Default off. */
+static bool
+panvk_chain_submit(void)
+{
+   static int v = -1;
+   if (v < 0) {
+      const char *e = getenv("PANVK_CHAIN");
+      v = e && e[0] == '1';
+   }
+   return v;
+}
+
 static void
 panvk_submit_gap(void)
 {
@@ -792,7 +807,42 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          VkResult batch_result = VK_SUCCESS;
          unsigned faulted = 0;
          static unsigned consec_faults = 0;
+         bool chained = panvk_chain_submit() && nr_atoms > 1;
          for (unsigned attempt = 0; ; attempt++) {
+            if (chained) {
+               /* Chain atoms with ORDER deps, submit all, then wait all. */
+               for (unsigned a = 0; a < nr_atoms; a++) {
+                  if (a == 0) {
+                     atoms[a].pre_dep[0].atom_id = 0;
+                     atoms[a].pre_dep[0].dependency_type = 0;
+                  } else {
+                     atoms[a].pre_dep[0].atom_id = atoms[a - 1].atom_number;
+                     atoms[a].pre_dep[0].dependency_type = 2; /* ORDER */
+                  }
+                  atoms[a].pre_dep[1].atom_id = 0;
+                  atoms[a].pre_dep[1].dependency_type = 0;
+               }
+               for (unsigned a = 0; a < nr_atoms; a++) {
+                  struct kbase_ioctl_job_submit submit1 = {
+                     .addr = (uint64_t)(uintptr_t)&atoms[a],
+                     .nr_atoms = 1,
+                     .stride = sizeof(atoms[0]),
+                  };
+
+                  ret = pan_kmod_ioctl(dev->kmod.dev->fd, KBASE_IOCTL_JOB_SUBMIT, &submit1);
+                  if (ret) {
+                     mesa_loge("kbase: KBASE_IOCTL_JOB_SUBMIT failed: %s", strerror(errno));
+                     return VK_ERROR_DEVICE_LOST;
+                  }
+               }
+               for (unsigned a = 0; a < nr_atoms && batch_result == VK_SUCCESS; a++) {
+                  batch_result = panvk_kbase_wait_jobs(dev, &atoms[a], 1);
+                  if (batch_result != VK_SUCCESS)
+                     faulted = a;
+                  else
+                     panvk_submit_gap();
+               }
+            } else
             for (unsigned a = 0; a < nr_atoms && batch_result == VK_SUCCESS; a++) {
                struct kbase_ioctl_job_submit submit1 = {
                   .addr = (uint64_t)(uintptr_t)&atoms[a],
