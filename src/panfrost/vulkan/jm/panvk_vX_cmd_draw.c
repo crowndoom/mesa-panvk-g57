@@ -1987,6 +1987,40 @@ panvk_v9_prepare_vs_desc(struct panvk_cmd_buffer *cmdbuf)
       }
    }
 
+   /* One-time v9 attrib table dump (PANVK_DUMPTABLES=N): the direct-draw
+    * path builds its tables here (prepare_vs_attribs only serves indirect
+    * draws). Shows formats/strides/addrs/sizes plus NullDescriptor
+    * substitutions, which read back as zero. */
+   {
+      static unsigned v9dumped = 0;
+      static int v9want = -1;
+      if (v9want < 0) {
+         const char *e = getenv("PANVK_DUMPTABLES");
+         v9want = e ? atoi(e) : 0;
+         if (v9want < 0)
+            v9want = 0;
+      }
+      if (v9dumped < (unsigned)v9want) {
+         v9dumped++;
+         mesa_loge("v9tables #%u vbs=%u descs=%llx", v9dumped, vb_count,
+                   (unsigned long long)driver_set.gpu);
+         for (uint32_t i = 0; i < vb_count; i++) {
+            const struct panvk_attrib_buf *vb = &cmdbuf->state.gfx.vb.bufs[i];
+            mesa_loge("v9tables #%u bind%u stride=%u addr=%llx size=%llu null=%d",
+                      v9dumped, i, dyns->vi_binding_strides[i],
+                      (unsigned long long)vb->address,
+                      (unsigned long long)vb->size,
+                      (int)(vb->address == 0 && vb->size == 0));
+         }
+         u_foreach_bit(i, vi->attributes_valid) {
+            mesa_loge("v9tables #%u attr%u bind=%u fmt=%d off=%u", v9dumped, i,
+                      vi->attributes[i].binding,
+                      (int)vi->attributes[i].format,
+                      (unsigned)vi->attributes[i].offset);
+         }
+      }
+   }
+
    vs_desc_state->driver_set.dev_addr = driver_set.gpu;
    vs_desc_state->driver_set.size = desc_count * PANVK_DESCRIPTOR_SIZE;
    gfx_state_set_dirty(cmdbuf, DESC_STATE);
