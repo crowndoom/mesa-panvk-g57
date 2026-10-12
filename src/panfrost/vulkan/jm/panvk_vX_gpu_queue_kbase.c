@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 #include "util/os_time.h"
@@ -161,6 +162,23 @@ panvk_kbase_dump_fault(struct panvk_device *dev, struct panvk_batch *batch,
                                   dev->tiler_heap->addr.dev : 0),
              (unsigned long long)batch->tiler.heap_desc.gpu,
              (unsigned long long)(batch->tiler.ctx_descs.gpu));
+
+   /* Is the faulted JC page even mapped in this process? mincore() reports
+    * page residency without faulting: ENOMEM means the VMA is gone (backing
+    * BO freed while still referenced -> lifetime bug, ours to fix), while
+    * resident means the GPU mapping itself is missing/stale (kernel-side). */
+   {
+      uintptr_t page = (uintptr_t)(fault_jc & ~0xfffull);
+      unsigned char vec = 0;
+      errno = 0;
+      int r = mincore((void *)page, 0x1000, &vec);
+      if (r == 0)
+         mesa_loge("kbaseFAULT mapcheck va=%llx resident=%d",
+                   (unsigned long long)fault_jc, (int)(vec & 1));
+      else
+         mesa_loge("kbaseFAULT mapcheck va=%llx UNMAPPED errno=%d",
+                   (unsigned long long)fault_jc, errno);
+   }
 
    unsigned n = 0;
    util_dynarray_foreach(&batch->jobs, void *, job) {
