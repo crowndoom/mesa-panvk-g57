@@ -42,6 +42,7 @@
 #include <sys/ioctl.h>
 #include <poll.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include "util/macros.h"
@@ -1286,6 +1287,25 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
    kbase_dev->dma_heap_uncached_fd = -1;
    kbase_dev->kcpu.fence_fd = -1;
    simple_mtx_init(&kbase_dev->kcpu.lock, mtx_plain);
+
+   /* Pinning pool pages (mlock) keeps the shrinker from reclaiming them
+    * out from under the GPU between submit and execution. Best effort:
+    * raise the memlock rlimit to its hard cap so mlock has room; failure
+    * is non-fatal (per-page mlock then covers what it can). */
+   {
+      struct rlimit rl;
+      if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0) {
+         mesa_loge("kbase: rlimit memlock cur=%llu max=%llu",
+                   (unsigned long long)rl.rlim_cur,
+                   (unsigned long long)rl.rlim_max);
+         if (rl.rlim_cur < rl.rlim_max) {
+            rl.rlim_cur = rl.rlim_max;
+            if (setrlimit(RLIMIT_MEMLOCK, &rl))
+               mesa_loge("kbase: setrlimit memlock failed: %s",
+                         strerror(errno));
+         }
+      }
+   }
 
    if (is_csf && kbase_query_csif_info(fd, &kbase_dev->csif_info)) {
       mesa_loge("kbase: failed to query the CSF global interface");

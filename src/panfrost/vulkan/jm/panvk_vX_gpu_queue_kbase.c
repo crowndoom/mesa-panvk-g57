@@ -237,6 +237,22 @@ panvk_chain_submit(void)
    return v;
 }
 
+/* Pin one page (best effort): mlock faults it in and shields it from the
+ * shrinker between submit and GPU execution. Failures (rlimit, special
+ * VMAs) are counted and logged once; the submit proceeds regardless. */
+static void
+panvk_kbase_mlock_va(uint64_t va)
+{
+   static unsigned fails = 0;
+   if (!va)
+      return;
+   if (mlock((void *)(uintptr_t)(va & ~0xfffull), 0x1000)) {
+      if (++fails == 1)
+         mesa_loge("kbase: mlock failed (errno=%d), pinning partial",
+                   errno);
+   }
+}
+
 static void
 panvk_submit_gap(void)
 {
@@ -826,6 +842,12 @@ panvk_kbase_jm_submit_batch(struct panvk_gpu_queue *queue,
          unsigned faulted = 0;
          static unsigned consec_faults = 0;
          bool chained = panvk_chain_submit() && nr_atoms > 1;
+         /* Pin the batch's pages before the kernel sees them: the tiler
+          * descriptors plus each chain head. Best effort (see helper). */
+         panvk_kbase_mlock_va(batch->tiler.heap_desc.gpu);
+         panvk_kbase_mlock_va(batch->tiler.ctx_descs.gpu);
+         panvk_kbase_mlock_va(batch->vtc_jc.first_job);
+         panvk_kbase_mlock_va(batch->frag_jc.first_job);
          for (unsigned attempt = 0; ; attempt++) {
             if (chained) {
                /* Chain atoms with ORDER deps, submit all, then wait all. */
